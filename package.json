@@ -1,0 +1,44 @@
+{
+  "name": "@zakiaziz/zendesk-cli",
+  "version": "0.1.0",
+  "description": "A human-friendly command line interface for the Zendesk Help Center API.",
+  "type": "module",
+  "bin": {
+    "zendesk": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "docs",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bun node_modules/typescript/bin/tsc -p tsconfig.json",
+    "check": "bun node_modules/typescript/bin/tsc --noEmit",
+    "test": "bun test test/*.test.ts",
+    "prepack": "bun run build",
+    "dev": "bun node_modules/typescript/bin/tsc -p tsconfig.json --watch"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "zendesk",
+    "guide",
+    "help-center",
+    "knowledge-base",
+    "cli"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zakiaziz/zendesk-cli.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
