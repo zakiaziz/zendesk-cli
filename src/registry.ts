@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
-import { usageError } from "./core/errors.js";
+import { CliError, usageError } from "./core/errors.js";
 import type { Endpoint } from "./core/access.js";
 import type { RequestSpec, ResourceCommand } from "./core/provider.js";
 import type { ArgumentSpec, Context, GroupSpec, OptionSpec, PaginationSpec } from "./core/registry.js";
-import { invalidValue, missingFields, validateId } from "./core/values.js";
+import { invalidValue, isRecord, missingFields, validateId } from "./core/values.js";
 
 const HELP_CENTER = "/api/v2/help_center";
 export const DEFAULT_LOCALE = "en-us";
@@ -51,7 +51,7 @@ const LOCALE: OptionSpec = {
   name: "locale",
   placeholder: "LOCALE",
   type: "string",
-  description: "Locale of the content. Default: the default locale setting, en-us unless configured.",
+  description: "Locale of the content. Default: the default locale of the profile, en-us unless it sets one.",
   check: checkLocale,
 };
 
@@ -374,14 +374,14 @@ const articleCommands: ResourceCommand[] = [
     ],
     effects: { kind: "read" },
     output:
-      "Collection envelope. data is an array of articles; meta holds next_cursor and has_more. With --include users, sections, or categories, meta.provider holds each side-loaded array under its relation name, merged across --all pages without repeats. Translations are embedded in each article.",
+      "Collection envelope. data is an array of articles; meta holds profile, next_cursor, and has_more. With --include users, sections, or categories, meta.provider holds each side-loaded array under its relation name, merged across --all pages without repeats. Translations are embedded in each article.",
     method: "GET",
     collectionKey: "articles",
     providerMeta: arrays(ARTICLE_INCLUDES),
     pagination: ARTICLE_ORDER,
     examples: [
       "zendesk articles list --section-id 456",
-      "zendesk articles list --label account --all --format human",
+      "zendesk articles list --label account --all --format json",
       "zendesk articles list --include users --include sections",
     ],
     request: (context, endpoint) => {
@@ -404,10 +404,13 @@ const articleCommands: ResourceCommand[] = [
     arguments: [ARTICLE_ID],
     options: [includeOption(ARTICLE_INCLUDES), LOCALE],
     effects: { kind: "read" },
-    output: "Resource envelope. data is the Zendesk response, which holds the article object under the article key; meta is empty.",
+    output:
+      "Resource envelope. data is the article object. With --include users, sections, or categories, meta.provider holds each side-loaded array under its relation name. Translations are embedded in the article. meta has profile.",
     method: "GET",
+    resourceKey: "article",
+    providerMeta: arrays(ARTICLE_INCLUDES),
     emptyIsNotFound: true,
-    examples: ["zendesk articles get 789", "zendesk articles get 789 --locale ja --format human", "zendesk articles get 789 --include users --include translations"],
+    examples: ["zendesk articles get 789", "zendesk articles get 789 --locale ja --format json", "zendesk articles get 789 --include users --include translations"],
     request: (context, endpoint) => ({
       path: `${localePath(context, endpoint)}/articles/${encodedId(context)}`,
       query: getQuery(context),
@@ -427,7 +430,7 @@ const articleCommands: ResourceCommand[] = [
     ],
     effects: { kind: "read" },
     output:
-      "Collection envelope. data is an array of search results; meta holds next_cursor, has_more, and provider.count, the total number of matches. A query that matches more than 1000 results returns only the first 1000, so narrow the query.",
+      "Collection envelope. data is an array of search results; meta holds profile, next_cursor, has_more, and provider.count, the total number of matches. A query that matches more than 1000 results returns only the first 1000, so narrow the query.",
     method: "GET",
     collectionKey: "results",
     pagination: {
@@ -460,8 +463,9 @@ const articleCommands: ResourceCommand[] = [
       { name: "notify-subscribers", type: "boolean", description: "Notify subscribers when the article is created." },
     ],
     effects: { kind: "remote-mutation", summary: "Creates an article in the section. It is a draft unless --publish is set." },
-    output: "Resource envelope. data is the Zendesk response, which holds the created article under the article key; meta is empty.",
+    output: "Resource envelope. data is the created article object; meta has profile.",
     method: "POST",
+    resourceKey: "article",
     examples: [
       `zendesk articles create --section-id 456 --title 'Reset your password' --body-file reset-password.html --dry-run`,
       `zendesk articles create --section-id 456 --title 'Reset your password' --body-file reset-password.html --yes`,
@@ -495,8 +499,9 @@ const articleCommands: ResourceCommand[] = [
       summary:
         "Changes only the supplied fields. Omitted fields keep their values. Sends one request: --title and --body-file change the localized content, and every other field changes the metadata, so the two groups cannot share one command.",
     },
-    output: "Resource envelope. data is the Zendesk response, which holds the article or translation object under its wrapper key; meta is empty.",
+    output: "Resource envelope. data is the updated article object, or the updated translation object when --title or --body-file changes localized content; meta has profile.",
     method: "PUT",
+    select: unwrapResource,
     examples: [
       `zendesk articles update 789 --title 'Reset your account password' --dry-run`,
       "zendesk articles update 789 --label account --label security --yes",
@@ -517,7 +522,7 @@ const articleCommands: ResourceCommand[] = [
     arguments: [ARTICLE_ID],
     options: [],
     effects: { kind: "remote-mutation", summary: "Archives the article. It can be restored in Zendesk Guide." },
-    output: "Resource envelope. data is null; meta is empty.",
+    output: "Resource envelope. data is null; meta has profile.",
     method: "DELETE",
     examples: ["zendesk articles archive 789 --dry-run", "zendesk articles archive 789 --yes"],
     request: (context) => ({
@@ -529,6 +534,14 @@ const articleCommands: ResourceCommand[] = [
   publicationCommand("unpublish", "Return an article's translation to draft.", true),
 ];
 
+/** The updated resource out of an update response, which wraps a metadata change by kind and a content change as a translation. */
+function unwrapResource(payload: unknown): unknown {
+  const body = isRecord(payload) ? payload : {};
+  const key = ["article", "section", "category", "translation"].find((name) => isRecord(body[name]));
+  if (key === undefined) throw new CliError("INVALID_RESPONSE", "Zendesk returned no article, section, category, or translation object for the update.");
+  return body[key];
+}
+
 function publicationCommand(action: "publish" | "unpublish", summary: string, draft: boolean): ResourceCommand {
   return {
     path: ["articles", action],
@@ -536,8 +549,9 @@ function publicationCommand(action: "publish" | "unpublish", summary: string, dr
     arguments: [ARTICLE_ID],
     options: [LOCALE],
     effects: { kind: "remote-mutation", summary: `Sets draft to ${draft} on the translation in the selected locale.` },
-    output: "Resource envelope. data is the Zendesk response, which holds the translation object under the translation key; meta is empty.",
+    output: "Resource envelope. data is the translation object; meta has profile.",
     method: "PUT",
+    resourceKey: "translation",
     examples: [`zendesk articles ${action} 789 --dry-run`, `zendesk articles ${action} 789 --locale ja --yes`],
     exceptions: [{ rule: "CLI-GRAM-4", reason: `${action} preserves the Zendesk Guide term for changing a translation's draft state.` }],
     request: (context, endpoint) => ({
@@ -607,14 +621,14 @@ function containerCommands(kind: "category" | "section"): ResourceCommand[] {
         LOCALE,
       ],
       effects: { kind: "read" },
-      output: `Collection envelope. data is an array of ${plural}; meta holds next_cursor and has_more. ${sections ? "With --include categories, meta.provider holds the side-loaded categories, merged across --all pages without repeats. " : ""}Translations are embedded in each ${kind}.`,
+      output: `Collection envelope. data is an array of ${plural}; meta holds profile, next_cursor, and has_more. ${sections ? "With --include categories, meta.provider holds the side-loaded categories, merged across --all pages without repeats. " : ""}Translations are embedded in each ${kind}.`,
       method: "GET",
       collectionKey: plural,
       ...(arrays(includes).length > 0 ? { providerMeta: arrays(includes) } : {}),
       pagination: BY_POSITION,
       examples: sections
-        ? ["zendesk sections list --category-id 123", "zendesk sections list --all --format human", "zendesk sections list --include categories"]
-        : ["zendesk categories list", "zendesk categories list --all --format human", "zendesk categories list --include translations"],
+        ? ["zendesk sections list --category-id 123", "zendesk sections list --all --format json", "zendesk sections list --include categories"]
+        : ["zendesk categories list", "zendesk categories list --all --format json", "zendesk categories list --include translations"],
       request: (context, endpoint) => {
         const category = sections ? context.options.string("category-id") : undefined;
         const scope = category ? `categories/${encodeURIComponent(category)}/sections` : plural;
@@ -627,10 +641,12 @@ function containerCommands(kind: "category" | "section"): ResourceCommand[] {
       arguments: [argument],
       options: [includeOption(includes), LOCALE],
       effects: { kind: "read" },
-      output: `Resource envelope. data is the Zendesk response, which holds the ${kind} object under the ${kind} key; meta is empty.`,
+      output: `Resource envelope. data is the ${kind} object.${includes.length > 0 && arrays(includes).length > 0 ? ` With --include ${arrays(includes).join(", ")}, meta.provider holds each side-loaded array under its relation name.` : ""} meta has profile.`,
       method: "GET",
+      resourceKey: kind,
+      providerMeta: arrays(includes),
       emptyIsNotFound: true,
-      examples: [`zendesk ${plural} get 123`, `zendesk ${plural} get 123 --locale ja --format human`, `zendesk ${plural} get 123 --include ${includes[0]}`],
+      examples: [`zendesk ${plural} get 123`, `zendesk ${plural} get 123 --locale ja --format json`, `zendesk ${plural} get 123 --include ${includes[0]}`],
       request: (context, endpoint) => ({
         path: `${localePath(context, endpoint)}/${plural}/${encodedId(context)}`,
         query: getQuery(context),
@@ -642,8 +658,9 @@ function containerCommands(kind: "category" | "section"): ResourceCommand[] {
       arguments: [],
       options: fieldOptions(true),
       effects: { kind: "remote-mutation", summary: `Creates a ${kind} with the supplied localized name and description.` },
-      output: `Resource envelope. data is the Zendesk response, which holds the created ${kind} under the ${kind} key; meta is empty.`,
+      output: `Resource envelope. data is the created ${kind} object; meta has profile.`,
       method: "POST",
+      resourceKey: kind,
       examples: sections
         ? ['zendesk sections create --category-id 123 --name "Billing" --dry-run', 'zendesk sections create --category-id 123 --name "Billing" --yes']
         : ['zendesk categories create --name "Support" --dry-run', 'zendesk categories create --name "Support" --yes'],
@@ -672,8 +689,9 @@ function containerCommands(kind: "category" | "section"): ResourceCommand[] {
         kind: "remote-mutation",
         summary: `Changes only the supplied fields. Omitted fields keep their values. Sends one request: --name and --description change the localized content, and every other field changes the metadata, so the two groups cannot share one command.`,
       },
-      output: `Resource envelope. data is the Zendesk response, which holds the ${kind} or translation object under its wrapper key; meta is empty.`,
+      output: `Resource envelope. data is the updated ${kind} object, or the updated translation object when --name or --description changes localized content; meta has profile.`,
       method: "PUT",
+      select: unwrapResource,
       examples: [`zendesk ${plural} update 123 --name 'Account help' --dry-run`, `zendesk ${plural} update 123 --position 2 --yes`],
       request: (context, endpoint) =>
         updateRequest(context, endpoint, {
@@ -696,7 +714,7 @@ function containerCommands(kind: "category" | "section"): ResourceCommand[] {
           ? "Deletes the section together with the articles it contains. Zendesk documents no way to restore a deleted section."
           : "Deletes the category together with the sections and articles it contains. Zendesk documents no way to restore a deleted category.",
       },
-      output: "Resource envelope. data is null; meta is empty.",
+      output: "Resource envelope. data is null; meta has profile.",
       method: "DELETE",
       examples: [`zendesk ${plural} delete 123 --dry-run`, `zendesk ${plural} delete 123 --yes`],
       request: (context) => ({
@@ -714,11 +732,11 @@ const localeCommands: ResourceCommand[] = [
     arguments: [],
     options: [],
     effects: { kind: "read" },
-    output: "Collection envelope. data is an array of locale codes; meta is empty.",
+    output: "Collection envelope. data is an array of locale codes; meta has profile.",
     method: "GET",
     collectionKey: "locales",
-    unpaginated: "Not paginated. Zendesk returns every enabled locale; meta is empty.",
-    examples: ["zendesk locales list", "zendesk locales list --format human"],
+    unpaginated: "Not paginated. Zendesk returns every enabled locale; meta has profile.",
+    examples: ["zendesk locales list", "zendesk locales list --format json"],
     request: () => ({ path: `${HELP_CENTER}/locales` }),
   },
 ];

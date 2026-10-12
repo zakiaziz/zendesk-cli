@@ -17,7 +17,7 @@ cd zendesk-cli && bun run build && bun link
 ```bash
 zendesk setup
 # List the articles in one section as a table.
-zendesk articles list --section-id 456 --all --format human
+zendesk articles list --section-id 456 --all
 # Preview a new draft article without creating it.
 zendesk articles create --section-id 456 --title 'Reset your password' --body-file reset-password.html --dry-run
 # Publish the Japanese translation of an article.
@@ -69,7 +69,7 @@ zendesk articles publish 789 --locale ja --yes
 
 | Command | Description | Options |
 | --- | --- | --- |
-| zendesk setup [NAME] | Create and activate a profile. | --email EMAIL, --api-token-file PATH, --oauth-token-file PATH, --base-url URL, --subdomain SUBDOMAIN, --default-locale LOCALE, --from-env |
+| zendesk setup [NAME] | Create and activate a profile. | --email EMAIL, --api-token-file PATH, --base-url URL, --subdomain SUBDOMAIN, --default-locale LOCALE |
 
 ### profiles
 
@@ -77,8 +77,8 @@ zendesk articles publish 789 --locale ja --yes
 | --- | --- | --- |
 | zendesk profiles list | List saved profiles. | None |
 | zendesk profiles get NAME | Get one saved profile with secrets redacted. | None |
-| zendesk profiles create NAME | Create a profile without activating it. | --email EMAIL, --api-token-file PATH, --oauth-token-file PATH, --base-url URL, --subdomain SUBDOMAIN, --default-locale LOCALE |
-| zendesk profiles update NAME | Update fields of a profile. | --email EMAIL, --api-token-file PATH, --oauth-token-file PATH, --base-url URL, --subdomain SUBDOMAIN, --default-locale LOCALE, --clear-base-url, --clear-subdomain, --clear-default-locale |
+| zendesk profiles create NAME | Create a profile without activating it. | --email EMAIL, --api-token-file PATH, --base-url URL, --subdomain SUBDOMAIN, --default-locale LOCALE |
+| zendesk profiles update NAME | Update fields of a profile. | --email EMAIL, --api-token-file PATH, --base-url URL, --subdomain SUBDOMAIN, --default-locale LOCALE, --clear-base-url, --clear-subdomain, --clear-default-locale |
 | zendesk profiles delete NAME | Delete a profile. | None |
 | zendesk profiles use NAME | Make a profile the active profile. | None |
 
@@ -88,15 +88,13 @@ zendesk articles publish 789 --locale ja --yes
 | --- | --- | --- |
 | zendesk config list | List every configuration key. | None |
 | zendesk config get KEY | Get one configuration value. | None |
-| zendesk config set KEY VALUE | Set one configuration value. | None |
-| zendesk config unset KEY | Remove one configuration value. | None |
 | zendesk config path | Get the configuration paths. | None |
 
 ### auth
 
 | Command | Description | Options |
 | --- | --- | --- |
-| zendesk auth verify | Verify the email and API token or OAuth token. | None |
+| zendesk auth verify | Verify the email and API token. | None |
 
 ### api
 
@@ -117,7 +115,7 @@ zendesk articles publish 789 --locale ja --yes
 | -h, --help | Show help. Uses no credentials or network. |
 | --version | Print the executable name and version. |
 | --profile NAME | Select a saved profile. |
-| --format FORMAT | Output format. Allowed: json, pretty, human. Default: json. |
+| --format FORMAT | Output format. Allowed: json, pretty, human. Default: human. |
 | --color WHEN | Color for pretty and human output. Allowed: auto, always, never. Default: auto. |
 | -q, --quiet | Suppress progress and notices. Results and errors still print. |
 | -v, --verbose | Print redacted diagnostics to stderr. |
@@ -128,10 +126,7 @@ Network commands (the resource commands, `auth verify`, and `api request`) accep
 
 ## Authentication
 
-Zendesk accepts two credential sets, and a profile or environment holds exactly one of them:
-
-- Email and API token, sent as HTTP Basic authentication.
-- OAuth token, sent as a bearer token.
+Zendesk authenticates with an agent's email and an API token, sent as HTTP Basic authentication. A profile stores both, and the account's subdomain.
 
 Create an API token in Zendesk Admin Center under **Apps and integrations > APIs > API tokens**, save the token to a file, and run `setup` with the email of the agent and the account's subdomain:
 
@@ -140,53 +135,40 @@ zendesk setup work --email agent@example.com --api-token-file ./zendesk-api-toke
 zendesk auth verify
 ```
 
-To use an OAuth token instead, save the token to a file and pass `--oauth-token-file`:
+`setup [NAME]` creates a profile (default name: `default`) and makes it the active profile. It fails when the profile exists. If activation fails after the profile is written, the profile stays saved and `setup` exits 8 with `PARTIAL_FAILURE`. In a terminal without `--no-input`, `setup` prompts for the missing fields: the email with visible input, and the API token with hidden input. Secrets are never command-line values: pass `--api-token-file PATH` (`-` reads stdin) or enter the API token at the prompt. The email is not secret: pass `--email EMAIL` or enter it at the prompt.
 
-```bash
-zendesk setup work --oauth-token-file ./zendesk-oauth-token.txt --subdomain acme
-```
+Credentials and endpoint settings come only from a profile. No environment variable supplies them or selects a profile, so a scheduled job passes `--profile NAME` explicitly. Profile selection is `--profile NAME`, otherwise `activeProfile` in `config.json`. A selected or active profile that does not exist, and no profile at all, fail with `CONFIGURATION_ERROR` and no fallback. The hint points to `zendesk setup NAME` or `zendesk profiles use NAME`.
 
-`setup` and `profiles create` reject `--email` or `--api-token-file` together with `--oauth-token-file`. `profiles update` with one set's fields replaces the stored fields of the other set. Do not set both sets in the environment: when the environment supplies a variable of each set, such as `ZENDESK_API_TOKEN` and `ZENDESK_OAUTH_TOKEN`, every command that reads credentials fails with `CONFIGURATION_ERROR` and names the variables, and `setup --from-env` fails with `INVALID_ARGUMENT`. A profile file that holds fields of both sets fails the same way.
-
-`setup [NAME]` creates a profile (default name: `default`) and makes it the active profile. It fails when the profile exists. If activation fails after the profile is written, the profile stays saved and `setup` exits 8 with `PARTIAL_FAILURE`. In a terminal without `--no-input`, when no credential option is given, `setup` asks which credential to store (`api-token` or `oauth`), then prompts for that credential's missing fields: the email with visible input, and the API token or OAuth token with hidden input. Tokens are never command-line values: pass `--api-token-file PATH` or `--oauth-token-file PATH` (`-` reads stdin), set `ZENDESK_API_TOKEN` or `ZENDESK_OAUTH_TOKEN` for commands that read the environment, or enter the API token at the prompt. The email is not secret: pass `--email EMAIL`, set `ZENDESK_EMAIL`, or enter it at the prompt. `setup --from-env` copies the complete credential set from the environment (email and API token, or OAuth token) and every set endpoint variable into the profile and cannot be combined with `--email`, `--api-token-file`, `--oauth-token-file`, `--base-url`, `--subdomain`, or `--default-locale`.
+The CLI reads three environment variables, and none supplies credentials, endpoints, or a profile:
 
 | Variable | Purpose |
 | --- | --- |
-| `ZENDESK_PROFILE` | Select a saved profile. |
-| `ZENDESK_EMAIL` | Email of the agent who owns the API token. |
-| `ZENDESK_API_TOKEN` | Zendesk API token. Needs `ZENDESK_EMAIL`. |
-| `ZENDESK_OAUTH_TOKEN` | Zendesk OAuth token, sent as a bearer token. Use it instead of `ZENDESK_EMAIL` and `ZENDESK_API_TOKEN`. |
-| `ZENDESK_SUBDOMAIN` | Zendesk subdomain, such as `acme`. Chooses the base URL `https://acme.zendesk.com`. |
-| `ZENDESK_BASE_URL` | Account base URL, an origin such as `https://acme.zendesk.com`. Beats the subdomain within the same source. |
-| `ZENDESK_DEFAULT_LOCALE` | Locale that Help Center commands use when `--locale` is not set. Default: `en-us`. |
 | `XDG_CONFIG_HOME` | Configuration root when it is an absolute path. Otherwise `~/.config`. |
 | `NO_COLOR` | Disables color with `--color auto` when set and nonempty. |
 | `CI` | Disables prompts when nonempty and not `0` or `false`. |
 
-A `ZENDESK_` variable that is set but empty, a malformed `ZENDESK_PROFILE`, and an invalid `ZENDESK_BASE_URL`, `ZENDESK_SUBDOMAIN`, or `ZENDESK_DEFAULT_LOCALE` fail with `CONFIGURATION_ERROR` and name the variable. None of them falls through to the next source.
+Stored in the profile:
 
-Precedence:
-
-1. Profile selection: `--profile`, `ZENDESK_PROFILE`, then `activeProfile` in `config.json`. A selected or active profile that does not exist fails with `CONFIGURATION_ERROR`, with no fallback.
-2. Credentials: `ZENDESK_EMAIL` and `ZENDESK_API_TOKEN`, or `ZENDESK_OAUTH_TOKEN`, then the selected profile. A credential set comes whole from the first source that supplies any part of it. A partial set fails with `AUTHENTICATION_REQUIRED`, and a source that supplies parts of both sets fails with `CONFIGURATION_ERROR`.
-3. Endpoint: `ZENDESK_BASE_URL` or `ZENDESK_SUBDOMAIN`, the selected profile, `config.json`, then the built-in default. Within one source a base URL beats the subdomain. Zendesk has no shared host, so the base URL has no default: with neither a base URL nor a subdomain set, requests and `--dry-run` fail with `CONFIGURATION_ERROR`. `ZENDESK_DEFAULT_LOCALE` follows the same order and defaults to `en-us`.
+- Endpoint: `baseUrl` or `subdomain` in the profile. A stored base URL beats the subdomain. Zendesk has no shared host, so the base URL has no default: a profile with neither fails requests and `--dry-run` with `CONFIGURATION_ERROR`.
+- Default locale: `defaultLocale` in the profile, then `en-us`.
 
 `zendesk auth verify` sends `GET /api/v2/users/me`. Success proves that Zendesk accepted the credential and returns the user it identifies, with secrets redacted. It does not prove permission for any Help Center resource.
 
 ## Output and errors
 
-The default output format is `json`: one compact, uncolored line on stdout with the envelope `{"data":...,"meta":{...}}`. `--format pretty` prints the same document indented, with syntax highlighting when color applies. `--format human` prints tables for collections and labeled fields for one resource. Errors go to stderr in the selected format. Help, `--version`, and `completions` print plain text.
+The default output format is `human`: tables for collections and labeled fields for one resource, whatever the terminal. Nested objects and arrays inside one resource print as indented fields and lists, and a table cell shows a short summary such as a name or `N items`, never raw JSON. A dry run prints `dry_run` and `validation`, then each request on its own lines. `--format json` prints one compact, uncolored line on stdout with the envelope `{"data":...,"meta":{...}}`, and scripts and agents pass it explicitly. `--format pretty` prints the same document indented, with syntax highlighting when color applies. With `--format pretty` or the default `human` format and stderr on a terminal, a command that sends a request first prints one gray line, `Profile: NAME`, to stderr. `--quiet` suppresses it, and `--format json` never prints it. Errors go to stderr in the selected format, so the default error is the `human` text. Help, `--version`, and `completions` print plain text. The bare command and a command group with no action print the same help as `--help` on stdout, exit 0; an unknown action fails with exit 2.
 
-`data` is an object for one resource, an array for a collection, or `null`, and keeps Zendesk's field names. For one resource, `data` is the Zendesk response body, which holds the object under its wrapper key, such as `article` or `translation`. For a collection, the array is unwrapped from its collection key. `meta` is always present.
+`data` is an object for one resource, an array for a collection, or `null`, and keeps Zendesk's field names. For one resource, `data` is the object itself, unwrapped from Zendesk's wrapper key such as `article` or `translation`, and side-loaded `users`, `sections`, or `categories` arrays are in `meta.provider`. For a collection, the array is unwrapped from its collection key. `meta` is always present.
 
 | `meta` key | When |
 | --- | --- |
+| `profile` | Every command that sends a request. The name of the profile that served it. |
 | `next_cursor` | Paginated collection reads. A string, or `null` when no page remains. |
 | `has_more` | Paginated collection reads. |
 | `provider` | Other collection fields that Zendesk returns: `count` for `articles search`. |
 | `dry_run`, `validation` | Dry-run previews. `validation` is `local`. |
 
-Errors print one document on stderr, for example `{"error":{"code":"RATE_LIMITED","message":"...","hint":"...","retryable":true,"provider":{"status":429}}}`. Optional keys are `hint`, `outcome` (`unknown` when a mutation may have applied), `provider` (`status`, `code`, `request_id`, `retry_after_seconds`), `details`, and `partial`. `--format human` prints `Error [CODE]: message` and `Hint: ...`.
+With `--format json`, errors print one compact document on stderr, for example `{"error":{"code":"RATE_LIMITED","message":"...","hint":"...","retryable":true,"provider":{"status":429}}}`. Optional keys are `hint`, `outcome` (`unknown` when a mutation may have applied), `provider` (`status`, `code`, `request_id`, `retry_after_seconds`), `details`, and `partial`. The default `human` format prints `Error [CODE]: message` and `Hint: ...`.
 
 | Exit | Error codes |
 | --- | --- |
@@ -202,11 +184,11 @@ Errors print one document on stderr, for example `{"error":{"code":"RATE_LIMITED
 | 9 | `CONFIRMATION_REQUIRED`, `CONFIRMATION_DECLINED` |
 | 130 | `INTERRUPTED` |
 
-IDs are opaque strings. Options accept `--name value` and `--name=value`, and `--` ends options. `--locale LOCALE` selects the localized content that Help Center commands read or change; the default is `ZENDESK_DEFAULT_LOCALE` or `en-us`. `--include RELATION` on `articles`, `categories`, and `sections` `get` and `list` side-loads related records through Zendesk's `include` query parameter. Repeat it to side-load several relations; the values are joined with commas in one request. On `get`, the side-loaded records are in `data` next to the primary object. On `list`, `data` stays the array of primary records and `meta.provider` holds each side-loaded array under its relation name; with `--all`, the arrays of every page are combined, and a record that an earlier page already returned (same `id`) is dropped. Translations are the exception: Zendesk embeds them in each record, so they appear inside `data` and never in `meta.provider`. Allowed relations, as the Help Center API documents them for each endpoint: `users`, `sections`, `categories`, and `translations` for articles; `categories` and `translations` for sections; `translations` for categories. Unknown commands, options, extra arguments, invalid values, and conflicting options fail with exit code 2 before any request.
+IDs are opaque strings. Options accept `--name value` and `--name=value`, and `--` ends options. `--locale LOCALE` selects the localized content that Help Center commands read or change; the default is the `defaultLocale` stored in the profile, or `en-us`. `--include RELATION` on `articles`, `categories`, and `sections` `get` and `list` side-loads related records through Zendesk's `include` query parameter. Repeat it to side-load several relations; the values are joined with commas in one request. On `get`, the side-loaded records are in `data` next to the primary object. On `list`, `data` stays the array of primary records and `meta.provider` holds each side-loaded array under its relation name; with `--all`, the arrays of every page are combined, and a record that an earlier page already returned (same `id`) is dropped. Translations are the exception: Zendesk embeds them in each record, so they appear inside `data` and never in `meta.provider`. Allowed relations, as the Help Center API documents them for each endpoint: `users`, `sections`, `categories`, and `translations` for articles; `categories` and `translations` for sections; `translations` for categories. Unknown commands, options, extra arguments, invalid values, and conflicting options fail with exit code 2 before any request.
 
 Zendesk keeps the metadata and the localized content of articles, categories, and sections behind separate endpoints, and each command sends one request. An `update` command therefore changes either the localized content (`--title` and `--body-file` for articles, `--name` and `--description` for categories and sections) or the metadata, and mixing the two groups fails with `INVALID_ARGUMENT`. New articles are drafts unless you pass `--publish`.
 
-Mutations (every `create`, `update`, `delete`, `archive`, `publish`, and `unpublish` command, and `api request` with `POST`, `PUT`, `PATCH`, or `DELETE`) need confirmation. The CLI validates arguments first, then resolves credentials (exit 3 when missing), then asks for confirmation. In a terminal, it shows the profile, operation, request, and effect, then prompts. `--yes` confirms without a prompt. With `--no-input`, a non-terminal stdin or stderr, or CI mode, a missing confirmation exits 9. Ctrl-C or end of input at a prompt exits 130 with `INTERRUPTED`. `--dry-run` prints a redacted preview of the request, with headers in the order `Authorization`, `Accept`, `Content-Type`, and sends nothing. It needs no credentials, but it prints the request URL, so with no base URL or subdomain configured it fails with `CONFIGURATION_ERROR`. Preview success does not guarantee that the request succeeds.
+Mutations (every `create`, `update`, `delete`, `archive`, `publish`, and `unpublish` command, and `api request` with `POST`, `PUT`, `PATCH`, or `DELETE`) need confirmation. The CLI validates arguments first, then resolves credentials (exit 3 when missing), then asks for confirmation. In a terminal, it shows the profile, operation, request, and effect, then prompts. `--yes` confirms without a prompt. With `--no-input`, a non-terminal stdin or stderr, or CI mode, a missing confirmation exits 9. Ctrl-C or end of input at a prompt exits 130 with `INTERRUPTED`. `--dry-run` prints a redacted preview of the request, with headers in the order `Authorization`, `Accept`, `Content-Type`, and sends nothing. It needs a profile but no stored credentials, and it prints the request URL, so a profile with no base URL or subdomain fails with `CONFIGURATION_ERROR`. Preview success does not guarantee that the request succeeds.
 
 Reads make up to 3 attempts on HTTP 429, 500, 502, 503, 504, network errors, and timeouts, waiting 250 ms, then 500 ms, or the `Retry-After` value up to 10 seconds. A `Retry-After` above 10 seconds is not waited on: the command fails with `RATE_LIMITED` and `provider.retry_after_seconds`. Mutations make one attempt. When a mutation times out or Zendesk answers with a server error, the error carries `outcome: "unknown"`: check the current state before you repeat it. `--timeout` applies to each attempt. `--verbose` writes redacted request, response, and retry diagnostics to stderr.
 
@@ -217,8 +199,8 @@ Paginated commands (`articles list`, `articles search`, `categories list`, and `
 `--all` follows every cursor. `--max-items N` (with `--all`) shrinks the last request so the read stops on a page boundary, and `meta.next_cursor` resumes it. `--cursor TOKEN` resumes from a previous `meta.next_cursor`, with or without `--all`. Repeat the same filters when you resume.
 
 ```bash
-zendesk articles list --all --max-items 100 > articles.json
-zendesk articles list --all --cursor "$(jq -r '.meta.next_cursor' articles.json)"
+zendesk articles list --all --max-items 100 --format json > articles.json
+zendesk articles list --all --cursor "$(jq -r '.meta.next_cursor' articles.json)" --format json
 ```
 
 Help Center lists use Zendesk cursor pagination. `articles search` uses offset pagination: its cursor is a decimal result offset, a resumed request can return fewer items than `--page-size` so the page aligns with the offset, and Zendesk returns at most 1000 results. `meta.provider.count` is the total number of matches. A query that matches more than 1000 results returns only the first 1000, so narrow the query.
@@ -240,13 +222,13 @@ Files live in `$XDG_CONFIG_HOME/zendesk` when `XDG_CONFIG_HOME` is an absolute p
 
 ```text
 zendesk/
-  config.json            {"activeProfile": "work", "baseUrl": "https://acme.zendesk.com"}
+  config.json            {"activeProfile": "work"}
   profiles/NAME.json     {"email": "...", "apiToken": "...", "baseUrl": "https://acme.zendesk.com"}
 ```
 
-Keys are camelCase. Files use mode `0600`, directories use mode `0700`, and writes are atomic: the CLI creates a temporary file exclusively with mode `0600` in the same directory, then renames it. Reads reject unknown keys and non-object JSON with `CONFIGURATION_ERROR`. Profile names match `^[A-Za-z0-9._-]+$` and are not `.` or `..`. `config.json` keys: `activeProfile` (read-only through `config`; change it with `profiles use`), `baseUrl`, `subdomain`, and `defaultLocale`. Profile fields: `email`, `apiToken`, `oauthToken`, `baseUrl`, `subdomain`, and `defaultLocale`. A profile stores either `email` and `apiToken` or `oauthToken`. The API token and OAuth token are redacted in previews, diagnostics, `profiles get`, and `config list`. The email is not secret and is shown unredacted.
+Keys are camelCase. Files use mode `0600`, directories use mode `0700`, and writes are atomic: the CLI creates a temporary file exclusively with mode `0600` in the same directory, then renames it. Reads reject unknown keys and non-object JSON with `CONFIGURATION_ERROR`. Profile names match `^[A-Za-z0-9._-]+$` and are not `.` or `..`. `config.json` holds one key, `activeProfile` (read-only through `config`; change it with `profiles use`). Credentials and endpoint settings live only in profile files, and a `config.json` with any other key fails with `CONFIGURATION_ERROR`. Profile fields: `email`, `apiToken`, `baseUrl`, `subdomain`, and `defaultLocale`. The API token is redacted in previews, diagnostics, `profiles get`, and `config list`. The email is not secret and is shown unredacted.
 
-A subdomain contains letters, digits, and hyphens, and starts and ends with a letter or digit. A base URL, from `--base-url`, `config set baseUrl`, `ZENDESK_BASE_URL`, or a stored file, must be an `https` URL (`http` only for `localhost`, `127.0.0.1`, or `::1`) with no credentials, query string, fragment, or path. Values are stored unchanged, and requests go to the URL's origin.
+A subdomain contains letters, digits, and hyphens, and starts and ends with a letter or digit. A base URL, from `--base-url` or a stored file, must be an `https` URL (`http` only for `localhost`, `127.0.0.1`, or `::1`) with no credentials, query string, fragment, or path. Values are stored unchanged, and requests go to the URL's origin.
 
 Completion scripts come from `zendesk completions bash|zsh|fish` and read only the command registry and local profile names. They complete commands, options, enum values (after `--OPT ` and `--OPT=`), `METHOD`, `SHELL`, and profile names (after `--profile` and for the `NAME` argument of `profiles get|update|delete|use`). They offer nothing after `--` or after an option that takes a free-form value.
 
