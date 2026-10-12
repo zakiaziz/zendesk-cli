@@ -17,6 +17,17 @@ const BY_POSITION: PaginationSpec = {
   ordering: "Ordered by position unless --sort-by is set.",
 };
 
+// Sideloads Zendesk documents for each list and get endpoint (Help Center API, "Sideloads"). Translations are embedded in
+// each record. Every other relation arrives as an array beside the collection.
+const ARTICLE_INCLUDES = ["users", "sections", "categories", "translations"];
+const SECTION_INCLUDES = ["categories", "translations"];
+const CATEGORY_INCLUDES = ["translations"];
+
+/** The relations that arrive as an array beside the collection, which a list moves into meta.provider. */
+function arrays(includes: readonly string[]): string[] {
+  return includes.filter((relation) => relation !== "translations");
+}
+
 const ARTICLE_ORDER: PaginationSpec = {
   max: PAGE_MAX,
   default: PAGE_MAX,
@@ -62,6 +73,28 @@ const BODY_FILE: OptionSpec = {
   type: "path",
   description: "Read the HTML body from PATH. - reads stdin. An empty file sets an empty body.",
 };
+
+/** Zendesk side-loads related records through a comma-separated include query parameter. */
+function includeOption(choices: string[]): OptionSpec {
+  return {
+    name: "include",
+    placeholder: "RELATION",
+    type: "enum",
+    choices,
+    repeatable: true,
+    description: "Side-load a related record into the response. Repeat to side-load several.",
+  };
+}
+
+function includeQuery(context: Context): [string, string | undefined] {
+  const relations = context.options.strings("include");
+  return ["include", relations.length > 0 ? relations.join(",") : undefined];
+}
+
+function getQuery(context: Context): [string, string][] {
+  const [name, value] = includeQuery(context);
+  return value === undefined ? [] : [[name, value]];
+}
 
 function labelOption(description: string): OptionSpec {
   return { name: "label", placeholder: "NAME", type: "string", repeatable: true, description, check: checkLabel };
@@ -336,14 +369,21 @@ const articleCommands: ResourceCommand[] = [
       labelOption("Article label name."),
       sortBy(["position", "title", "created_at", "updated_at", "edited_at"]),
       SORT_ORDER,
+      includeOption(ARTICLE_INCLUDES),
       LOCALE,
     ],
     effects: { kind: "read" },
-    output: "Collection envelope. data is an array of articles; meta holds next_cursor and has_more.",
+    output:
+      "Collection envelope. data is an array of articles; meta holds next_cursor and has_more. With --include users, sections, or categories, meta.provider holds each side-loaded array under its relation name, merged across --all pages without repeats. Translations are embedded in each article.",
     method: "GET",
     collectionKey: "articles",
+    providerMeta: arrays(ARTICLE_INCLUDES),
     pagination: ARTICLE_ORDER,
-    examples: ["zendesk articles list --section-id 456", "zendesk articles list --label account --all --format human"],
+    examples: [
+      "zendesk articles list --section-id 456",
+      "zendesk articles list --label account --all --format human",
+      "zendesk articles list --include users --include sections",
+    ],
     request: (context, endpoint) => {
       const section = context.options.string("section-id");
       const category = context.options.string("category-id");
@@ -352,20 +392,26 @@ const articleCommands: ResourceCommand[] = [
         : category
           ? `categories/${encodeURIComponent(category)}/`
           : "";
-      return { path: `${localePath(context, endpoint)}/${scope}articles`, query: listQuery(context, [labelQuery(context)]) };
+      return {
+        path: `${localePath(context, endpoint)}/${scope}articles`,
+        query: listQuery(context, [labelQuery(context), includeQuery(context)]),
+      };
     },
   },
   {
     path: ["articles", "get"],
     summary: "Get one article.",
     arguments: [ARTICLE_ID],
-    options: [LOCALE],
+    options: [includeOption(ARTICLE_INCLUDES), LOCALE],
     effects: { kind: "read" },
     output: "Resource envelope. data is the Zendesk response, which holds the article object under the article key; meta is empty.",
     method: "GET",
     emptyIsNotFound: true,
-    examples: ["zendesk articles get 789", "zendesk articles get 789 --locale ja --format human"],
-    request: (context, endpoint) => ({ path: `${localePath(context, endpoint)}/articles/${encodedId(context)}` }),
+    examples: ["zendesk articles get 789", "zendesk articles get 789 --locale ja --format human", "zendesk articles get 789 --include users --include translations"],
+    request: (context, endpoint) => ({
+      path: `${localePath(context, endpoint)}/articles/${encodedId(context)}`,
+      query: getQuery(context),
+    }),
   },
   {
     path: ["articles", "search"],
@@ -509,6 +555,7 @@ function containerCommands(kind: "category" | "section"): ResourceCommand[] {
   const plural = sections ? "sections" : "categories";
   const label = sections ? "Section" : "Category";
   const argument = sections ? SECTION_ID : CATEGORY_ID;
+  const includes = sections ? SECTION_INCLUDES : CATEGORY_INCLUDES;
   const metadataFields = ["position", ...(sections ? ["category-id", "parent-section-id", "sorting", "theme-template"] : [])];
 
   const fieldOptions = (creating: boolean): OptionSpec[] => [
@@ -556,33 +603,38 @@ function containerCommands(kind: "category" | "section"): ResourceCommand[] {
         ...(sections ? [idOption("category-id", "List only sections in this category.")] : []),
         sortBy(["position", "created_at", "updated_at"]),
         SORT_ORDER,
+        includeOption(includes),
         LOCALE,
       ],
       effects: { kind: "read" },
-      output: `Collection envelope. data is an array of ${plural}; meta holds next_cursor and has_more.`,
+      output: `Collection envelope. data is an array of ${plural}; meta holds next_cursor and has_more. ${sections ? "With --include categories, meta.provider holds the side-loaded categories, merged across --all pages without repeats. " : ""}Translations are embedded in each ${kind}.`,
       method: "GET",
       collectionKey: plural,
+      ...(arrays(includes).length > 0 ? { providerMeta: arrays(includes) } : {}),
       pagination: BY_POSITION,
       examples: sections
-        ? ["zendesk sections list --category-id 123", "zendesk sections list --all --format human"]
-        : ["zendesk categories list", "zendesk categories list --all --format human"],
+        ? ["zendesk sections list --category-id 123", "zendesk sections list --all --format human", "zendesk sections list --include categories"]
+        : ["zendesk categories list", "zendesk categories list --all --format human", "zendesk categories list --include translations"],
       request: (context, endpoint) => {
         const category = sections ? context.options.string("category-id") : undefined;
         const scope = category ? `categories/${encodeURIComponent(category)}/sections` : plural;
-        return { path: `${localePath(context, endpoint)}/${scope}`, query: listQuery(context) };
+        return { path: `${localePath(context, endpoint)}/${scope}`, query: listQuery(context, [includeQuery(context)]) };
       },
     },
     {
       path: [plural, "get"],
       summary: `Get one ${kind}.`,
       arguments: [argument],
-      options: [LOCALE],
+      options: [includeOption(includes), LOCALE],
       effects: { kind: "read" },
       output: `Resource envelope. data is the Zendesk response, which holds the ${kind} object under the ${kind} key; meta is empty.`,
       method: "GET",
       emptyIsNotFound: true,
-      examples: [`zendesk ${plural} get 123`, `zendesk ${plural} get 123 --locale ja --format human`],
-      request: (context, endpoint) => ({ path: `${localePath(context, endpoint)}/${plural}/${encodedId(context)}` }),
+      examples: [`zendesk ${plural} get 123`, `zendesk ${plural} get 123 --locale ja --format human`, `zendesk ${plural} get 123 --include ${includes[0]}`],
+      request: (context, endpoint) => ({
+        path: `${localePath(context, endpoint)}/${plural}/${encodedId(context)}`,
+        query: getQuery(context),
+      }),
     },
     {
       path: [plural, "create"],

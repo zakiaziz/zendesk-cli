@@ -30,8 +30,8 @@ zendesk articles publish 789 --locale ja --yes
 
 | Command | Description | Options |
 | --- | --- | --- |
-| zendesk articles list | List articles. | --section-id ID, --category-id ID, --label NAME, --sort-by FIELD, --sort-order ORDER, --locale LOCALE, --page-size N, --cursor TOKEN, --all, --max-items N |
-| zendesk articles get ARTICLE_ID | Get one article. | --locale LOCALE |
+| zendesk articles list | List articles. | --section-id ID, --category-id ID, --label NAME, --sort-by FIELD, --sort-order ORDER, --include RELATION, --locale LOCALE, --page-size N, --cursor TOKEN, --all, --max-items N |
+| zendesk articles get ARTICLE_ID | Get one article. | --include RELATION, --locale LOCALE |
 | zendesk articles search QUERY | Search articles. | --section-id ID, --category-id ID, --label NAME, --sort-by FIELD, --sort-order ORDER, --locale LOCALE, --page-size N, --cursor TOKEN, --all, --max-items N |
 | zendesk articles create | Create an article. | --title TEXT, --body-file PATH, --section-id ID, --author-id ID, --comments-disabled BOOLEAN, --content-tag-id ID, --label NAME, --permission-group-id ID, --position N, --promoted BOOLEAN, --user-segment-id ID, --locale LOCALE, --publish, --notify-subscribers, --yes, --dry-run |
 | zendesk articles update ARTICLE_ID | Update article metadata or localized content. | --title TEXT, --body-file PATH, --section-id ID, --author-id ID, --comments-disabled BOOLEAN, --content-tag-id ID, --clear-content-tag-id, --label NAME, --clear-label, --permission-group-id ID, --position N, --promoted BOOLEAN, --user-segment-id ID, --clear-user-segment-id, --locale LOCALE, --yes, --dry-run |
@@ -43,8 +43,8 @@ zendesk articles publish 789 --locale ja --yes
 
 | Command | Description | Options |
 | --- | --- | --- |
-| zendesk categories list | List categories. | --sort-by FIELD, --sort-order ORDER, --locale LOCALE, --page-size N, --cursor TOKEN, --all, --max-items N |
-| zendesk categories get CATEGORY_ID | Get one category. | --locale LOCALE |
+| zendesk categories list | List categories. | --sort-by FIELD, --sort-order ORDER, --include RELATION, --locale LOCALE, --page-size N, --cursor TOKEN, --all, --max-items N |
+| zendesk categories get CATEGORY_ID | Get one category. | --include RELATION, --locale LOCALE |
 | zendesk categories create | Create a category. | --name TEXT, --description TEXT, --position N, --locale LOCALE, --yes, --dry-run |
 | zendesk categories update CATEGORY_ID | Update category metadata or localized content. | --name TEXT, --description TEXT, --position N, --locale LOCALE, --yes, --dry-run |
 | zendesk categories delete CATEGORY_ID | Delete a category. | --yes, --dry-run |
@@ -59,8 +59,8 @@ zendesk articles publish 789 --locale ja --yes
 
 | Command | Description | Options |
 | --- | --- | --- |
-| zendesk sections list | List sections. | --category-id ID, --sort-by FIELD, --sort-order ORDER, --locale LOCALE, --page-size N, --cursor TOKEN, --all, --max-items N |
-| zendesk sections get SECTION_ID | Get one section. | --locale LOCALE |
+| zendesk sections list | List sections. | --category-id ID, --sort-by FIELD, --sort-order ORDER, --include RELATION, --locale LOCALE, --page-size N, --cursor TOKEN, --all, --max-items N |
+| zendesk sections get SECTION_ID | Get one section. | --include RELATION, --locale LOCALE |
 | zendesk sections create | Create a section. | --name TEXT, --description TEXT, --position N, --category-id ID, --parent-section-id ID, --sorting VALUE, --theme-template TEXT, --locale LOCALE, --yes, --dry-run |
 | zendesk sections update SECTION_ID | Update section metadata or localized content. | --name TEXT, --description TEXT, --position N, --category-id ID, --parent-section-id ID, --sorting VALUE, --theme-template TEXT, --locale LOCALE, --yes, --dry-run |
 | zendesk sections delete SECTION_ID | Delete a section. | --yes, --dry-run |
@@ -69,7 +69,7 @@ zendesk articles publish 789 --locale ja --yes
 
 | Command | Description | Options |
 | --- | --- | --- |
-| zendesk setup [NAME] | Create and activate a profile. | --email EMAIL, --api-token-file PATH, --base-url URL, --subdomain SUBDOMAIN, --default-locale LOCALE, --from-env |
+| zendesk setup [NAME] | Create and activate a profile. | --email EMAIL, --api-token-file PATH, --oauth-token-file PATH, --base-url URL, --subdomain SUBDOMAIN, --default-locale LOCALE, --from-env |
 
 ### profiles
 
@@ -77,8 +77,8 @@ zendesk articles publish 789 --locale ja --yes
 | --- | --- | --- |
 | zendesk profiles list | List saved profiles. | None |
 | zendesk profiles get NAME | Get one saved profile with secrets redacted. | None |
-| zendesk profiles create NAME | Create a profile without activating it. | --email EMAIL, --api-token-file PATH, --base-url URL, --subdomain SUBDOMAIN, --default-locale LOCALE |
-| zendesk profiles update NAME | Update fields of a profile. | --email EMAIL, --api-token-file PATH, --base-url URL, --subdomain SUBDOMAIN, --default-locale LOCALE, --clear-base-url, --clear-subdomain, --clear-default-locale |
+| zendesk profiles create NAME | Create a profile without activating it. | --email EMAIL, --api-token-file PATH, --oauth-token-file PATH, --base-url URL, --subdomain SUBDOMAIN, --default-locale LOCALE |
+| zendesk profiles update NAME | Update fields of a profile. | --email EMAIL, --api-token-file PATH, --oauth-token-file PATH, --base-url URL, --subdomain SUBDOMAIN, --default-locale LOCALE, --clear-base-url, --clear-subdomain, --clear-default-locale |
 | zendesk profiles delete NAME | Delete a profile. | None |
 | zendesk profiles use NAME | Make a profile the active profile. | None |
 
@@ -96,7 +96,7 @@ zendesk articles publish 789 --locale ja --yes
 
 | Command | Description | Options |
 | --- | --- | --- |
-| zendesk auth verify | Verify the email and API token. | None |
+| zendesk auth verify | Verify the email and API token or OAuth token. | None |
 
 ### api
 
@@ -128,6 +128,11 @@ Network commands (the resource commands, `auth verify`, and `api request`) accep
 
 ## Authentication
 
+Zendesk accepts two credential sets, and a profile or environment holds exactly one of them:
+
+- Email and API token, sent as HTTP Basic authentication.
+- OAuth token, sent as a bearer token.
+
 Create an API token in Zendesk Admin Center under **Apps and integrations > APIs > API tokens**, save the token to a file, and run `setup` with the email of the agent and the account's subdomain:
 
 ```bash
@@ -135,13 +140,22 @@ zendesk setup work --email agent@example.com --api-token-file ./zendesk-api-toke
 zendesk auth verify
 ```
 
-`setup [NAME]` creates a profile (default name: `default`) and makes it the active profile. It fails when the profile exists. If activation fails after the profile is written, the profile stays saved and `setup` exits 8 with `PARTIAL_FAILURE`. In a terminal without `--no-input`, `setup` prompts for a missing email with visible input and a missing API token with hidden input. The API token is never a command-line value: pass `--api-token-file PATH` (`-` reads stdin), set `ZENDESK_API_TOKEN`, or enter it at the prompt. The email is not secret: pass `--email EMAIL`, set `ZENDESK_EMAIL`, or enter it at the prompt. `setup --from-env` copies `ZENDESK_EMAIL`, `ZENDESK_API_TOKEN`, and `ZENDESK_BASE_URL` into the profile and cannot be combined with `--email`, `--api-token-file`, `--base-url`, `--subdomain`, or `--default-locale`.
+To use an OAuth token instead, save the token to a file and pass `--oauth-token-file`:
+
+```bash
+zendesk setup work --oauth-token-file ./zendesk-oauth-token.txt --subdomain acme
+```
+
+`setup` and `profiles create` reject `--email` or `--api-token-file` together with `--oauth-token-file`. `profiles update` with one set's fields replaces the stored fields of the other set. Do not set both sets in the environment: when the environment supplies a variable of each set, such as `ZENDESK_API_TOKEN` and `ZENDESK_OAUTH_TOKEN`, every command that reads credentials fails with `CONFIGURATION_ERROR` and names the variables, and `setup --from-env` fails with `INVALID_ARGUMENT`. A profile file that holds fields of both sets fails the same way.
+
+`setup [NAME]` creates a profile (default name: `default`) and makes it the active profile. It fails when the profile exists. If activation fails after the profile is written, the profile stays saved and `setup` exits 8 with `PARTIAL_FAILURE`. In a terminal without `--no-input`, when no credential option is given, `setup` asks which credential to store (`api-token` or `oauth`), then prompts for that credential's missing fields: the email with visible input, and the API token or OAuth token with hidden input. Tokens are never command-line values: pass `--api-token-file PATH` or `--oauth-token-file PATH` (`-` reads stdin), set `ZENDESK_API_TOKEN` or `ZENDESK_OAUTH_TOKEN` for commands that read the environment, or enter the API token at the prompt. The email is not secret: pass `--email EMAIL`, set `ZENDESK_EMAIL`, or enter it at the prompt. `setup --from-env` copies the complete credential set from the environment (email and API token, or OAuth token) and every set endpoint variable into the profile and cannot be combined with `--email`, `--api-token-file`, `--oauth-token-file`, `--base-url`, `--subdomain`, or `--default-locale`.
 
 | Variable | Purpose |
 | --- | --- |
 | `ZENDESK_PROFILE` | Select a saved profile. |
 | `ZENDESK_EMAIL` | Email of the agent who owns the API token. |
 | `ZENDESK_API_TOKEN` | Zendesk API token. Needs `ZENDESK_EMAIL`. |
+| `ZENDESK_OAUTH_TOKEN` | Zendesk OAuth token, sent as a bearer token. Use it instead of `ZENDESK_EMAIL` and `ZENDESK_API_TOKEN`. |
 | `ZENDESK_SUBDOMAIN` | Zendesk subdomain, such as `acme`. Chooses the base URL `https://acme.zendesk.com`. |
 | `ZENDESK_BASE_URL` | Account base URL, an origin such as `https://acme.zendesk.com`. Beats the subdomain within the same source. |
 | `ZENDESK_DEFAULT_LOCALE` | Locale that Help Center commands use when `--locale` is not set. Default: `en-us`. |
@@ -154,7 +168,7 @@ A `ZENDESK_` variable that is set but empty, a malformed `ZENDESK_PROFILE`, and 
 Precedence:
 
 1. Profile selection: `--profile`, `ZENDESK_PROFILE`, then `activeProfile` in `config.json`. A selected or active profile that does not exist fails with `CONFIGURATION_ERROR`, with no fallback.
-2. Credentials: `ZENDESK_EMAIL` and `ZENDESK_API_TOKEN`, then the selected profile. A credential set comes whole from the first source that supplies any part of it. A partial set fails with `AUTHENTICATION_REQUIRED`.
+2. Credentials: `ZENDESK_EMAIL` and `ZENDESK_API_TOKEN`, or `ZENDESK_OAUTH_TOKEN`, then the selected profile. A credential set comes whole from the first source that supplies any part of it. A partial set fails with `AUTHENTICATION_REQUIRED`, and a source that supplies parts of both sets fails with `CONFIGURATION_ERROR`.
 3. Endpoint: `ZENDESK_BASE_URL` or `ZENDESK_SUBDOMAIN`, the selected profile, `config.json`, then the built-in default. Within one source a base URL beats the subdomain. Zendesk has no shared host, so the base URL has no default: with neither a base URL nor a subdomain set, requests and `--dry-run` fail with `CONFIGURATION_ERROR`. `ZENDESK_DEFAULT_LOCALE` follows the same order and defaults to `en-us`.
 
 `zendesk auth verify` sends `GET /api/v2/users/me`. Success proves that Zendesk accepted the credential and returns the user it identifies, with secrets redacted. It does not prove permission for any Help Center resource.
@@ -188,7 +202,7 @@ Errors print one document on stderr, for example `{"error":{"code":"RATE_LIMITED
 | 9 | `CONFIRMATION_REQUIRED`, `CONFIRMATION_DECLINED` |
 | 130 | `INTERRUPTED` |
 
-IDs are opaque strings. Options accept `--name value` and `--name=value`, and `--` ends options. `--locale LOCALE` selects the localized content that Help Center commands read or change; the default is `ZENDESK_DEFAULT_LOCALE` or `en-us`. Unknown commands, options, extra arguments, invalid values, and conflicting options fail with exit code 2 before any request.
+IDs are opaque strings. Options accept `--name value` and `--name=value`, and `--` ends options. `--locale LOCALE` selects the localized content that Help Center commands read or change; the default is `ZENDESK_DEFAULT_LOCALE` or `en-us`. `--include RELATION` on `articles`, `categories`, and `sections` `get` and `list` side-loads related records through Zendesk's `include` query parameter. Repeat it to side-load several relations; the values are joined with commas in one request. On `get`, the side-loaded records are in `data` next to the primary object. On `list`, `data` stays the array of primary records and `meta.provider` holds each side-loaded array under its relation name; with `--all`, the arrays of every page are combined, and a record that an earlier page already returned (same `id`) is dropped. Translations are the exception: Zendesk embeds them in each record, so they appear inside `data` and never in `meta.provider`. Allowed relations, as the Help Center API documents them for each endpoint: `users`, `sections`, `categories`, and `translations` for articles; `categories` and `translations` for sections; `translations` for categories. Unknown commands, options, extra arguments, invalid values, and conflicting options fail with exit code 2 before any request.
 
 Zendesk keeps the metadata and the localized content of articles, categories, and sections behind separate endpoints, and each command sends one request. An `update` command therefore changes either the localized content (`--title` and `--body-file` for articles, `--name` and `--description` for categories and sections) or the metadata, and mixing the two groups fails with `INVALID_ARGUMENT`. New articles are drafts unless you pass `--publish`.
 
@@ -218,7 +232,7 @@ zendesk api request GET /api/v2/help_center/articles --query per_page=10
 zendesk api request PUT /api/v2/help_center/articles/789 --file request.json --dry-run
 ```
 
-Methods: `GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, `DELETE`. `PATH` starts with a single `/` and has no scheme, host, query string, fragment, whitespace, or `.` and `..` segments. Add query parameters with the repeatable `--query KEY=VALUE`, which keeps exact names such as `page[size]`. `--file PATH` sends a JSON body as `application/json` (`-` reads stdin). `--file`, `--yes`, and `--dry-run` are rejected on `GET`, `HEAD`, and `OPTIONS`. The CLI sends the selected profile's credentials only to the configured API origin. JSON responses print as parsed, other text prints as a JSON string, an empty body prints `null`, and binary responses fail with `UNSUPPORTED_RESPONSE`. Non-2xx responses use the same error mapping as other commands. Use this command for side-loading with `include`, which first-class commands do not expose.
+Methods: `GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, `DELETE`. `PATH` starts with a single `/` and has no scheme, host, query string, fragment, whitespace, or `.` and `..` segments. Add query parameters with the repeatable `--query KEY=VALUE`, which keeps exact names such as `page[size]`. `--file PATH` sends a JSON body as `application/json` (`-` reads stdin). `--file`, `--yes`, and `--dry-run` are rejected on `GET`, `HEAD`, and `OPTIONS`. The CLI sends the selected profile's credentials only to the configured API origin. JSON responses print as parsed, other text prints as a JSON string, an empty body prints `null`, and binary responses fail with `UNSUPPORTED_RESPONSE`. Non-2xx responses use the same error mapping as other commands.
 
 ## Configuration
 
@@ -230,7 +244,7 @@ zendesk/
   profiles/NAME.json     {"email": "...", "apiToken": "...", "baseUrl": "https://acme.zendesk.com"}
 ```
 
-Keys are camelCase. Files use mode `0600`, directories use mode `0700`, and writes are atomic: the CLI creates a temporary file exclusively with mode `0600` in the same directory, then renames it. Reads reject unknown keys and non-object JSON with `CONFIGURATION_ERROR`. Profile names match `^[A-Za-z0-9._-]+$` and are not `.` or `..`. `config.json` keys: `activeProfile` (read-only through `config`; change it with `profiles use`), `baseUrl`, `subdomain`, and `defaultLocale`. Profile fields: `email`, `apiToken`, `baseUrl`, `subdomain`, and `defaultLocale`. The API token is redacted in previews, diagnostics, `profiles get`, and `config list`. The email is not secret and is shown unredacted.
+Keys are camelCase. Files use mode `0600`, directories use mode `0700`, and writes are atomic: the CLI creates a temporary file exclusively with mode `0600` in the same directory, then renames it. Reads reject unknown keys and non-object JSON with `CONFIGURATION_ERROR`. Profile names match `^[A-Za-z0-9._-]+$` and are not `.` or `..`. `config.json` keys: `activeProfile` (read-only through `config`; change it with `profiles use`), `baseUrl`, `subdomain`, and `defaultLocale`. Profile fields: `email`, `apiToken`, `oauthToken`, `baseUrl`, `subdomain`, and `defaultLocale`. A profile stores either `email` and `apiToken` or `oauthToken`. The API token and OAuth token are redacted in previews, diagnostics, `profiles get`, and `config list`. The email is not secret and is shown unredacted.
 
 A subdomain contains letters, digits, and hyphens, and starts and ends with a letter or digit. A base URL, from `--base-url`, `config set baseUrl`, `ZENDESK_BASE_URL`, or a stored file, must be an `https` URL (`http` only for `localhost`, `127.0.0.1`, or `::1`) with no credentials, query string, fragment, or path. Values are stored unchanged, and requests go to the URL's origin.
 

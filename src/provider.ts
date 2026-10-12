@@ -14,10 +14,18 @@ export const provider: Provider = {
   secrets: [
     { key: "email", label: "email", secret: false, validate: emailConstraint },
     { key: "apiToken", label: "API token", validate: visibleAsciiConstraint },
+    { key: "oauthToken", label: "OAuth token", validate: visibleAsciiConstraint },
   ],
-  authScheme: "HTTP Basic authentication with the email and API token",
+  credentialSets: [
+    { name: "api-token", fields: ["email", "apiToken"] },
+    { name: "oauth", fields: ["oauthToken"] },
+  ],
+  authScheme: "HTTP Basic authentication with the email and API token, or a bearer OAuth token",
   authorize: (credential) => ({
-    Authorization: `Basic ${Buffer.from(`${credential.email}/token:${credential.apiToken}`).toString("base64")}`,
+    Authorization:
+      credential.oauthToken === undefined
+        ? `Basic ${Buffer.from(`${credential.email}/token:${credential.apiToken}`).toString("base64")}`
+        : `Bearer ${credential.oauthToken}`,
   }),
   // Zendesk has no shared host, so the subdomain field derives the base URL and an unconfigured endpoint fails.
   baseUrl: { allowPath: false },
@@ -118,7 +126,8 @@ function applyPage({ query }: PagedRequest, page: PageRequest): void {
   query.set("page", String(offset / perPage + 1));
 }
 
-function readPage(payload: Record<string, unknown>, collectionKey: string): PageInfo | undefined {
+function readPage(payload: unknown, collectionKey: string | undefined): PageInfo | undefined {
+  if (!isRecord(payload)) return undefined;
   return collectionKey === "results" ? readOffsetPage(payload) : readCursorPage(payload);
 }
 
