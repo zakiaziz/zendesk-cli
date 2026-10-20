@@ -9,13 +9,15 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function redact(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redact);
+export function redact(value: unknown, secretValues: readonly string[] = []): unknown {
+  if (typeof value === "string") return secretValues.filter((secret) => secret !== "").sort((left, right) => right.length - left.length).reduce((text, secret) => text.split(secret).join(REDACTED), value);
+  if (typeof value === "number" && secretValues.includes(String(value))) return REDACTED;
+  if (Array.isArray(value)) return value.map((item) => redact(item, secretValues));
   if (!isRecord(value)) return value;
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
-      SENSITIVE_KEY.test(key) && item !== null && item !== undefined ? REDACTED : redact(item),
+      SENSITIVE_KEY.test(key) && item !== null && item !== undefined ? REDACTED : redact(item, secretValues),
     ]),
   );
 }
@@ -53,6 +55,44 @@ export function sensitiveValues(body: unknown, query: readonly (readonly [string
 /** Hides userinfo and sensitive query values in a string that is echoed back in an error. Tolerates malformed URLs and paths. */
 export function redactCredentials(value: string): string {
   return redactUserinfo(redactQueryValues(value));
+}
+
+/** Sensitive values in URL input or decoded response fields, including fragments and encoded forms. */
+export function urlSecretValues(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(urlSecretValues);
+  if (isRecord(value)) return Object.values(value).flatMap(urlSecretValues);
+  if (typeof value !== "string") return [];
+  const values: string[] = [];
+  try {
+    const url = new URL(value, "https://localhost");
+    values.push(url.username, url.password);
+  } catch {
+    // Query and fragment values can still be read from malformed input.
+  }
+  for (const pair of value.matchAll(/[?&#;]([^=?&#;]+)=([^&#;]*)/g)) {
+    if (SENSITIVE_KEY.test(decodeName(pair[1] ?? ""))) values.push(pair[2] ?? "");
+  }
+  const found = new Set<string>();
+  for (const raw of values) {
+    const decoded = decodeName(raw);
+    const form = new URLSearchParams([["", decoded]]);
+    for (const secret of [raw, decoded, encodeURIComponent(form.get("") ?? ""), form.toString().slice(1)]) {
+      if (secret !== "") found.add(secret);
+    }
+  }
+  return [...found].sort((left, right) => right.length - left.length);
+}
+
+/** URL continuation input can repeat a secret outside its sensitive query key or in a rejected fragment. */
+export function redactUrlInput(value: string): string {
+  return redactCredentials(urlSecretValues(value).reduce((text, secret) => text.replace(new RegExp(secretPattern(secret, true), "g"), REDACTED), value));
+}
+
+/** Literal secret matching, optionally treating percent-escape hex digits as case-insensitive. */
+export function secretPattern(value: string, urlEncoded = false): string {
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!urlEncoded) return escaped;
+  return escaped.replace(/%[0-9a-f]{2}/gi, (triplet) => [...triplet].map((char) => /[a-f]/i.test(char) ? `[${char.toLowerCase()}${char.toUpperCase()}]` : char).join(""));
 }
 
 function redactQueryValues(value: string): string {
@@ -223,6 +263,20 @@ export function baseUrlConstraint(value: string, allowPath: boolean): string | u
 export function baseUrlRule(allowPath: boolean): string {
   const path = allowPath ? "" : "; no path";
   return `https URL, or http for localhost, 127.0.0.1, or ::1; no credentials, query, or fragment${path}`;
+}
+
+/** Validates an HTTP(S) continuation or redirect without normalizing away forbidden input. */
+export function sameOriginUrl(value: string, base: string, relative = false): URL | undefined {
+  if (value === "" || /[\s\u0000-\u001f\u007f\\#]/.test(value)) return undefined;
+  if (!relative && !/^https?:\/\//i.test(value)) return undefined;
+  if (/^(?:https?:)?\/\/[^/?#]*@/i.test(value)) return undefined;
+  try {
+    const url = relative ? new URL(value, base) : new URL(value);
+    if (!["http:", "https:"].includes(url.protocol) || url.origin !== new URL(base).origin || url.username || url.password) return undefined;
+    return url;
+  } catch {
+    return undefined;
+  }
 }
 
 export const ID_RULE = "a nonempty string, not . or .., without control characters";

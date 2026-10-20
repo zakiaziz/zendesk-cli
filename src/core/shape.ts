@@ -6,9 +6,11 @@ import {
   decodeJson,
   guardHook,
   invalidResponse,
+  isJsonType,
   MAX_CODE_LENGTH,
   providerFailure,
   retryAfterSeconds,
+  rememberUrlSecrets,
   scrubDeep,
   scrubSecrets,
   type Exchange,
@@ -32,7 +34,8 @@ export function hookHelpers(request: RequestSpec, plan: RequestPlan, exchange: E
     const value = exchange.headers.get(name);
     return value === null ? undefined : scrubSecrets(value, plan);
   };
-  return { scrub: (text) => cleanProviderText(text, plan) ?? "", provider, request, header };
+  const responseType = exchange.text === "" ? "empty" : isJsonType(exchange.contentType) ? "json" : "text";
+  return { scrub: (text) => cleanProviderText(text, plan) ?? "", provider, request, header, responseType };
 }
 
 export interface Shaped {
@@ -51,8 +54,12 @@ export interface Unwrapped {
 }
 
 /** Decodes a response body. A GraphQL provider also gets its errors, partial data, and root field handled. */
-export function unwrap(exchange: Exchange, call: ShapeCall, plan: RequestPlan): Unwrapped {
+export function unwrap(exchange: Exchange, call: ShapeCall, plan: RequestPlan, urlContinuation = false): Unwrapped {
   const body = decodeJson(exchange, call.mutation, plan);
+  if (urlContinuation) {
+    rememberUrlSecrets(plan, body);
+    if (exchange.requestId) exchange.requestId = scrubSecrets(exchange.requestId, plan);
+  }
   if (plan.provider.protocol !== "graphql") {
     rejectBodyFailure(body, plan, exchange);
     return { body, input: body, root: body };

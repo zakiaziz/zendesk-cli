@@ -137,6 +137,9 @@ export class Client {
       maxItems: options.number("max-items"),
       cursor: options.string("cursor"),
       window: spec.window,
+      boundary: spec.boundary,
+      min: spec.min,
+      max: spec.max,
     };
     return traverse(this.plan(call, true), this.shapeCall(call), style, traversal, this.context);
   }
@@ -215,6 +218,8 @@ export class Client {
         ...(call.body === undefined ? {} : { body: call.body }),
         mutation: call.mutation,
         raw: call.raw ?? false,
+        redirects: call.redirects,
+        accept: call.accept,
         secretValues: call.secretValues ?? [],
       },
       { provider, access, credential, setName, timeoutMs: this.context.globals.timeoutMs },
@@ -230,8 +235,11 @@ export class Client {
     const exchange = await performRequest(plan, deadline);
     if (call.raw) {
       const data = decodeRaw(exchange, call.mutation, plan);
-      failOnBody(data, plan, exchange);
-      return { shaped: { data, meta: {} }, exchange };
+      const { settle } = call;
+      if (settle) rejectBodyFailure(data, plan, exchange);
+      else failOnBody(data, plan, exchange);
+      const settled = settle ? (guardHook(plan, () => settle({ data, payload: data }, this.context, hookHelpers(call, plan, exchange))) ?? null) : data;
+      return { shaped: { data: settled, meta: {} }, exchange };
     }
     const shapeCall = this.shapeCall(call);
     return { shaped: shapeResponse(unwrap(exchange, shapeCall, plan), shapeCall, plan, exchange, this.context), exchange };
@@ -263,10 +271,9 @@ export class Client {
 
 const sleep = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-/** Hides every header the provider's authorize() produced, whatever its name. */
 /**
- * A raw response keeps the provider body unchanged. When the provider reports a failure inside that body, the body
- * still prints to stdout, and the command then fails with the mapped error so that the exit code and stderr say so.
+ * A raw success keeps the provider body unchanged. A body that reports a failure prints to stdout with request
+ * secrets scrubbed, and the command then fails with the mapped error.
  */
 function failOnBody(data: unknown, plan: RequestPlan, exchange: Exchange): void {
   try {
@@ -277,6 +284,7 @@ function failOnBody(data: unknown, plan: RequestPlan, exchange: Exchange): void 
   }
 }
 
+/** Hides every header the provider's authorize() produced, whatever its name. */
 function hiddenHeaders(plan: RequestPlan): Record<string, string> {
   return Object.fromEntries(plan.credentialHeaders.map((name) => [name, REDACTED]));
 }

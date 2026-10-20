@@ -3,9 +3,9 @@ import type { Access } from "./access.js";
 import { credentialNoun, credentialOptionsText, isSecret, setsFor, type Credential } from "./credentials.js";
 import { asCliError, CliError, failureCode, httpFailure, waitHint, type ErrorCode, type PagePartial, type ProviderInfo, type StepError, type StepPartial } from "./errors.js";
 import { announceProfile, printDiagnostic } from "./output.js";
-import type { Provider } from "./provider.js";
+import type { Provider, RequestSpec } from "./provider.js";
 import type { HttpMethod } from "./types.js";
-import { isRecord, redactUrl, REDACTED, sensitiveValues, WHOLE_TOKEN_BELOW } from "./values.js";
+import { echoable, isRecord, redactUrlInput, redactUrl, REDACTED, sameOriginUrl, secretPattern, sensitiveValues, urlSecretValues, WHOLE_TOKEN_BELOW } from "./values.js";
 
 const MAX_ATTEMPTS = 3;
 const BACKOFF_MS = [250, 500];
@@ -15,7 +15,7 @@ export const MAX_CODE_LENGTH = 64;
 const MAX_REQUEST_ID_LENGTH = 128;
 
 /** What one request needs, before credentials and the endpoint are applied. */
-export interface PlanInput {
+export interface PlanInput extends Pick<RequestSpec, "redirects" | "accept"> {
   method: HttpMethod;
   path: string;
   query: readonly (readonly [string, string])[];
@@ -44,6 +44,8 @@ export interface RequestPlan {
   body?: unknown;
   safe: boolean;
   raw: boolean;
+  redirects?: "same-origin";
+  urlContinuation?: true;
   timeoutMs: number;
   profile: string;
   /** The credential set the request sends, when the provider declares credentialSets. */
@@ -54,6 +56,8 @@ export interface RequestPlan {
   secrets: string[];
   /** Short values guessed from sensitive keys, scrubbed only where they stand alone. */
   shortSecrets: string[];
+  /** Providers opting into sensitiveInput also redact matching numbers and object keys in error bodies. */
+  secretValues?: readonly string[];
 }
 
 export interface Exchange {
@@ -66,10 +70,13 @@ export interface Exchange {
 
 export function buildPlan(input: PlanInput, environment: PlanEnvironment): RequestPlan {
   const { provider, access, credential } = environment;
+  if (input.redirects && input.mutation) {
+    throw new CliError("UNEXPECTED_ERROR", `redirects "${input.redirects}" requires a read; received mutation true.`);
+  }
   const url = new URL(requestUrl(provider, access.baseUrl, input.path));
   for (const [key, value] of input.query) url.searchParams.append(key, value);
   const credentialHeaders = credential ? provider.authorize(credential.values) : {};
-  const headers: Record<string, string> = { ...provider.headers, ...credentialHeaders, Accept: "application/json" };
+  const headers: Record<string, string> = { ...provider.headers, ...credentialHeaders, Accept: input.accept ?? "application/json" };
   if (input.body !== undefined) headers["Content-Type"] = jsonContentType(provider);
   return {
     provider,
@@ -79,10 +86,12 @@ export function buildPlan(input: PlanInput, environment: PlanEnvironment): Reque
     ...(input.body === undefined ? {} : { body: input.body }),
     safe: !input.mutation,
     raw: input.raw,
+    ...(input.redirects ? { redirects: input.redirects } : {}),
     timeoutMs: environment.timeoutMs,
     profile: access.profileName,
     setName: environment.setName,
     credentialHeaders: Object.keys(credentialHeaders),
+    ...(provider.api.sensitiveInput && input.secretValues.length ? { secretValues: input.secretValues } : {}),
     ...scrubbedValues(provider, credential, credentialHeaders, input),
   };
 }
@@ -127,12 +136,23 @@ function scrubbedValues(
   };
 }
 
+/** Remembers URL secrets before validation, including rejected targets and encoded copies. */
+export function rememberUrlSecrets(plan: RequestPlan, input: unknown): void {
+  for (const value of urlSecretValues(input)) {
+    const values = value.length < WHOLE_TOKEN_BELOW ? plan.shortSecrets : plan.secrets;
+    if (!values.includes(value)) values.push(value);
+  }
+  plan.secrets.sort((left, right) => right.length - left.length);
+  plan.shortSecrets.sort((left, right) => right.length - left.length);
+}
+
 /**
  * Sends a request with the retries its safety allows. With a deadline (epoch milliseconds) no attempt outlasts it:
  * each attempt's timeout is capped to the time left, and a retry that would start after it is not made, so the last
- * failure is thrown instead.
+ * failure is thrown instead. An optional inspector reads successful responses before diagnostics, so pagination can
+ * register secrets in a returned continuation before a request ID can echo them.
  */
-export async function performRequest(plan: RequestPlan, deadline?: number): Promise<Exchange> {
+export async function performRequest(plan: RequestPlan, deadline?: number, inspect?: (exchange: Exchange) => void): Promise<Exchange> {
   announceProfile(plan.profile);
   const attempts = plan.safe ? MAX_ATTEMPTS : 1;
   for (let attempt = 1; ; attempt += 1) {
@@ -146,9 +166,14 @@ export async function performRequest(plan: RequestPlan, deadline?: number): Prom
       timeout_ms: timeoutMs,
       profile: plan.profile,
     });
+    let inspected = false;
     try {
-      return await attemptOnce({ ...plan, timeoutMs });
+      return await attemptOnce({ ...plan, timeoutMs }, inspect ? (exchange) => {
+        inspected = true;
+        inspect(exchange);
+      } : undefined);
     } catch (error) {
+      if (inspected) throw error;
       const failure = limitRetryAfter(asCliError(error));
       const delay = retryDelay(failure, attempt, attempts);
       if (delay === undefined || (deadline !== undefined && Date.now() + delay >= deadline)) throw failure;
@@ -186,43 +211,77 @@ function retryDelay(failure: CliError, attempt: number, attempts: number): numbe
 
 const DECODER = new TextDecoder("utf-8", { fatal: true });
 
-async function attemptOnce(plan: RequestPlan): Promise<Exchange> {
+async function attemptOnce(plan: RequestPlan, inspect?: (exchange: Exchange) => void): Promise<Exchange> {
   const started = Date.now();
+  const signal = AbortSignal.timeout(plan.timeoutMs);
+  let url = plan.url;
+  const visited = new Set([url]);
   let response: Response;
-  try {
-    response = await fetch(plan.url, {
-      method: plan.method,
-      redirect: "error",
-      headers: plan.headers,
-      ...(plan.body === undefined ? {} : { body: JSON.stringify(plan.body) }),
-      signal: AbortSignal.timeout(plan.timeoutMs),
-    });
-  } catch (error) {
-    throw networkFailure(error, plan);
-  }
-  const requestId = scrubSecrets(requestIdOf(response.headers, plan.provider), plan);
-  printDiagnostic("response", { status: response.status, duration_ms: Date.now() - started, request_id: requestId ?? null });
-  const contentType = response.headers.get("content-type") ?? "";
-  const bodyless = plan.method === "HEAD" || response.status === 204 || response.status === 205;
-  const known = { status: response.status, contentType, headers: response.headers, ...(requestId ? { requestId } : {}) };
-  if (response.ok && plan.raw && !bodyless && contentType !== "" && !isTextual(contentType)) {
+  for (let hops = 0; ; hops += 1) {
+    try {
+      response = await fetch(url, {
+        method: plan.method,
+        redirect: plan.redirects ? "manual" : "error",
+        headers: plan.headers,
+        ...(plan.body === undefined ? {} : { body: JSON.stringify(plan.body) }),
+        signal,
+      });
+    } catch (error) {
+      throw networkFailure(error, plan);
+    }
+    if (!plan.redirects || ![301, 302, 303, 307, 308].includes(response.status)) break;
     await response.body?.cancel();
-    throw unsupportedResponse(`${plan.provider.name} returned binary content (${scrubSecrets(contentType, plan)}).`, { ...known, text: "" }, plan);
+    const location = response.headers.get("location") ?? "";
+    rememberUrlSecrets(plan, location);
+    const next = sameOriginUrl(location, url, true);
+    const provider = { status: response.status, request_id: cleanProviderText(requestIdOf(response.headers, plan.provider), plan, MAX_REQUEST_ID_LENGTH) };
+    const received = echoable(scrubSecrets(redactUrlInput(location), plan));
+    if (!next || next.origin !== new URL(plan.url).origin) {
+      throw new CliError("INVALID_RESPONSE", `Location must resolve to an HTTP(S) URL on ${new URL(plan.url).origin} without credentials, whitespace, backslashes, or a fragment; received "${received}".`, {
+        hint: "Use an endpoint that redirects only within the configured API origin.", provider,
+      });
+    }
+    if (hops >= 3 || visited.has(next.toString())) {
+      throw new CliError("INVALID_RESPONSE", `Location must not repeat a URL or exceed 3 redirect hops; received "${received}" at hop ${hops + 1}.`, {
+        hint: "Use an endpoint that returns a response within 3 redirects.", provider,
+      });
+    }
+    url = next.toString();
+    visited.add(url);
+    printDiagnostic("request", { method: plan.method, url: displayUrl(plan, url), redirect: hops + 1, timeout_ms: plan.timeoutMs, profile: plan.profile });
   }
-  let bytes = new Uint8Array();
+  const requestId = requestIdOf(response.headers, plan.provider);
+  const report = () => printDiagnostic("response", { status: response.status, duration_ms: Date.now() - started, request_id: scrubSecrets(requestId, plan) ?? null });
+  if (!inspect) report();
   try {
-    if (!bodyless) bytes = new Uint8Array(await response.arrayBuffer());
-  } catch (error) {
-    if (!response.ok) throw statusFailure(response, "", plan);
-    throw networkFailure(error, plan);
-  }
-  if (!response.ok) throw statusFailure(response, new TextDecoder("utf-8").decode(bytes), plan);
-  try {
-    return { ...known, text: DECODER.decode(bytes) };
-  } catch {
-    const message = `${plan.provider.name} returned a body that is not UTF-8 text.`;
-    if (plan.raw) throw unsupportedResponse(message, { ...known, text: "" }, plan);
-    throw undecodableResponse(plan, message, { ...known, text: "" }, !plan.safe);
+    const contentType = response.headers.get("content-type") ?? "";
+    const bodyless = plan.method === "HEAD" || response.status === 204 || response.status === 205;
+    const known = { status: response.status, contentType, headers: response.headers, ...(requestId ? { requestId: scrubSecrets(requestId, plan) } : {}) };
+    if (response.ok && plan.raw && !bodyless && contentType !== "" && !isTextual(contentType)) {
+      await response.body?.cancel();
+      throw unsupportedResponse(`${plan.provider.name} returned binary content (${scrubSecrets(contentType, plan)}).`, { ...known, text: "" }, plan);
+    }
+    let bytes = new Uint8Array();
+    try {
+      if (!bodyless) bytes = new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      if (!response.ok) throw statusFailure(response, "", plan);
+      throw networkFailure(error, plan);
+    }
+    if (!response.ok) throw statusFailure(response, new TextDecoder("utf-8").decode(bytes), plan);
+    let text: string;
+    try {
+      text = DECODER.decode(bytes);
+    } catch {
+      const message = `${plan.provider.name} returned a body that is not UTF-8 text.`;
+      if (plan.raw) throw unsupportedResponse(message, { ...known, text: "" }, plan);
+      throw undecodableResponse(plan, message, { ...known, text: "" }, !plan.safe);
+    }
+    const exchange = { ...known, text };
+    inspect?.(exchange);
+    return exchange;
+  } finally {
+    if (inspect) report();
   }
 }
 
@@ -239,20 +298,18 @@ export function scrubSecrets(value: string, plan: RequestPlan): string;
 export function scrubSecrets(value: string | undefined, plan: RequestPlan): string | undefined;
 export function scrubSecrets(value: string | undefined, plan: RequestPlan): string | undefined {
   if (value === undefined) return undefined;
-  const whole = plan.secrets.reduce((text, secret) => text.split(secret).join(REDACTED), value);
-  return plan.shortSecrets.reduce((text, secret) => text.replace(wholeToken(secret), REDACTED), whole);
-}
-
-function wholeToken(secret: string): RegExp {
-  return new RegExp(`(?<![A-Za-z0-9])${secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "g");
+  const urls = plan.redirects !== undefined || plan.urlContinuation === true;
+  const whole = plan.secrets.reduce((text, secret) => urls ? text.replace(new RegExp(secretPattern(secret, true), "g"), REDACTED) : text.split(secret).join(REDACTED), value);
+  return plan.shortSecrets.reduce((text, secret) => text.replace(new RegExp(`(?<![A-Za-z0-9])${secretPattern(secret, urls)}(?![A-Za-z0-9])`, "g"), REDACTED), whole);
 }
 
 /** Scrubs every string inside a value that is about to be printed, such as a dry-run body. */
 export function scrubDeep(value: unknown, plan: RequestPlan): unknown {
   if (typeof value === "string") return scrubSecrets(value, plan);
+  if (typeof value === "number" && plan.secretValues?.includes(String(value))) return REDACTED;
   if (Array.isArray(value)) return value.map((item) => scrubDeep(item, plan));
   if (!isRecord(value)) return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrubDeep(item, plan)]));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [plan.secretValues?.length ? scrubSecrets(key, plan) : key, scrubDeep(item, plan)]));
 }
 
 /** The request URL for diagnostics, previews, and prompts: sensitive query parameters and declared secrets hidden. */
@@ -352,6 +409,7 @@ export function providerFailure(
   message: string | undefined,
   rawCode: string | number | undefined = provider.code,
 ): CliError {
+  if (typeof provider.code === "number" && plan.secretValues?.includes(String(provider.code))) provider = { ...provider, code: REDACTED };
   const { provider: definition } = plan;
   const sets = setsFor(definition, plan.setName);
   const noun = credentialNoun(definition, sets);
@@ -395,7 +453,7 @@ function parseJson(text: string): unknown {
   }
 }
 
-function isJsonType(contentType: string): boolean {
+export function isJsonType(contentType: string): boolean {
   return /^application\/(?:[\w.+-]+\+)?json\b/i.test(contentType);
 }
 

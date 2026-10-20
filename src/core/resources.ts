@@ -41,7 +41,10 @@ export function resourceCommand(tool: Tool, command: ResourceCommand, hasList: L
     }),
     examples: command.examples,
     ...(command.exceptions ? { exceptions: command.exceptions } : {}),
-    run: (context) => (command.run ? runCustom(tool, command, context) : runRequest(tool, command, context, hasList)),
+    run: (context) => {
+      const prepared = command.prepare?.(context);
+      return command.run ? runCustom(tool, command, context, prepared) : runRequest(tool, command, context, hasList, prepared);
+    },
   };
 }
 
@@ -66,16 +69,16 @@ export function localCommand(command: LocalCommand): CommandSpec {
   };
 }
 
-async function runCustom(tool: Tool, command: RunCommand, context: Context): Promise<void> {
+async function runCustom(tool: Tool, command: RunCommand, context: Context, prepared: unknown): Promise<void> {
   const client = new Client(tool, context, command.credential);
   if (command.effects.kind === "remote-mutation") client.assertWritable();
-  const result = await command.run(context, client);
+  const result = await command.run(context, client, prepared);
   if (result) printResult(result.data, client.meta(result.meta));
 }
 
-async function runRequest(tool: Tool, command: RequestCommand, context: Context, hasList: ListLookup): Promise<void> {
+async function runRequest(tool: Tool, command: RequestCommand, context: Context, hasList: ListLookup, prepared: unknown): Promise<void> {
   const client = new Client(tool, context, command.credential);
-  const request = command.request(context, client.endpoint);
+  const request = command.request(context, client.endpoint, prepared);
   const mutation = command.effects.kind === "remote-mutation";
   const call: Call = {
     ...request,

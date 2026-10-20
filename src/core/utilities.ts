@@ -112,6 +112,7 @@ class Utilities {
   private apiRequestSpec(): CommandSpec {
     const { api, authScheme } = this.provider;
     const mutating = api.methods.filter((method) => !SAFE_METHODS.includes(method));
+    const hasMutations = mutating.length > 0;
     const safe = api.methods.filter((method) => SAFE_METHODS.includes(method));
     const safeSentence =
       safe.length > 0 ? ` ${listWords(safe, "and")} ${safe.length > 1 ? "are read only and reject" : "is read only and rejects"} --yes, --dry-run, and --file.` : "";
@@ -119,9 +120,7 @@ class Utilities {
     const sets = fieldSets(this.provider);
     const options: OptionSpec[] = [
       QUERY_OPTION,
-      fileRequired ? { ...FILE_OPTION, required: true } : FILE_OPTION,
-      YES_OPTION,
-      DRY_RUN_OPTION,
+      ...(hasMutations ? [fileRequired ? { ...FILE_OPTION, required: true } : FILE_OPTION, YES_OPTION, DRY_RUN_OPTION] : []),
       ...(isPerRequest(this.provider) ? [credentialOption(sets.map((set) => set.name), this.credentialName, "send")] : []),
     ];
     const exceptions = [...(api.graphql ? [GRAPHQL_API_EXCEPTION] : []), ...(api.exceptions ?? [])];
@@ -147,14 +146,16 @@ class Utilities {
       options,
       kind: "network",
       effects: {
-        kind: "remote-mutation",
-        summary: `Applies to ${listWords(mutating, "and")}.${safeSentence} Sends the selected profile credentials only to the configured API origin, as ${authScheme}, with an ${jsonContentType(this.provider)} body. Safe methods retry up to 3 attempts. Mutations make one attempt.`,
+        kind: hasMutations ? "remote-mutation" : "read",
+        summary: hasMutations
+          ? `Applies to ${listWords(mutating, "and")}.${safeSentence} Sends the selected profile credentials only to the configured API origin, as ${authScheme}, with an ${jsonContentType(this.provider)} body. Safe methods retry up to 3 attempts. Mutations make one attempt.`
+          : `Sends the selected profile credentials only to the configured API origin, as ${authScheme}. Safe methods retry up to 3 attempts.`,
       },
-      ...(this.provider.accessLevels ? { writeAccess: "mutating-methods" as const } : {}),
+      ...(hasMutations && this.provider.accessLevels ? { writeAccess: "mutating-methods" as const } : {}),
       output:
         "Provider body as parsed JSON, a JSON string for non-JSON text, or null for an empty body. Binary responses fail. --format still applies.",
       failures: failureList([
-        ...networkFailures({ identified: true, partial: false, mutation: true }),
+        ...networkFailures({ identified: true, partial: false, mutation: hasMutations }),
         "UNSUPPORTED_RESPONSE",
       ]),
       examples: api.examples,
@@ -303,11 +304,15 @@ class Utilities {
     const file = context.options.string("file");
     const body = file === undefined ? undefined : readJsonFile("--file", file);
     if (body !== undefined) this.provider.api.bodyCheck?.(body);
+    const query = context.options.strings("query").map((pair) => parseKeyValue("--query", pair));
+    const sensitive = this.provider.api.sensitiveInput?.({ method, path, query: structuredClone(query), body: structuredClone(body) });
     const call: Call = {
       method,
       path,
-      query: context.options.strings("query").map((pair) => parseKeyValue("--query", pair)),
+      query,
       ...(body === undefined ? {} : { body }),
+      ...(sensitive?.previewBody === undefined ? {} : { previewBody: sensitive.previewBody }),
+      ...(sensitive?.secretValues === undefined ? {} : { secretValues: sensitive.secretValues }),
       mutation: !safe,
       raw: true,
     };

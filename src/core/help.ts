@@ -118,11 +118,12 @@ function commandHelp(bin: string, spec: CommandSpec): string {
 
 function paginationText(spec: CommandSpec): string | undefined {
   if (!spec.pagination) return spec.unpaginated;
-  const { max, maxSource, ordering, window } = spec.pagination;
+  const { max, maxSource, ordering, window, boundary } = spec.pagination;
   const limit = maxSource === "tool" ? `Page size limit: ${max}, set by this tool because the provider documents none.` : `Provider limit: ${max} per page.`;
   return [
     `One page by default. ${ordering} ${limit}`,
     "--all follows every cursor. --max-items stops on a page boundary, and meta.next_cursor resumes the read.",
+    ...(boundary ? ["Continuation URLs keep their page size, even when --page-size changes. --max-items stops before a page that exceeds the remaining budget, so it can return fewer than N items, including none."] : []),
     ...(window === undefined
       ? []
       : [`The provider serves only the first ${window} items. A read that reaches that limit ends with has_more true and a null next_cursor.`]),

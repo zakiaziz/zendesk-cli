@@ -2,7 +2,7 @@
 import { ERROR_CODES, usageError, type ErrorCode } from "./errors.js";
 import type { Pagination } from "./provider.js";
 import type { GlobalOptions } from "./types.js";
-import { DATE_TIME_FORM, echoable, parseCalendarDate } from "./values.js";
+import { DATE_TIME_FORM, echoable, parseCalendarDate, redactUrlInput, sameOriginUrl } from "./values.js";
 
 export type OptionType = "boolean" | "string" | "integer" | "enum" | "date" | "duration" | "path" | "key-value";
 
@@ -97,6 +97,8 @@ export interface Exception {
 }
 
 export interface PaginationSpec {
+  /** Smallest page size the provider accepts. Default: 1. */
+  min?: number;
   /** Largest page size the command accepts. */
   max: number;
   default: number;
@@ -108,6 +110,8 @@ export interface PaginationSpec {
   maxSource?: "provider" | "tool";
   /** The style this command pages with. Default: the provider's pagination. */
   style?: Pagination;
+  /** Keep the continuation's page size. Stop before a page that exceeds --max-items, possibly below the bound. */
+  boundary?: "preserve-cursor-size";
   /**
    * Largest result the provider serves, counted from offset 0. The cursor must be the decimal offset. The core
    * clamps the request size to the window, and a read that reaches it ends with has_more true and next_cursor null.
@@ -249,10 +253,10 @@ export function paginationOptions(pagination: PaginationSpec, style: Pagination 
       name: "page-size",
       placeholder: "N",
       type: "integer",
-      min: 1,
+      min: pagination.min ?? 1,
       max: pagination.max,
       default: String(pagination.default),
-      description: `Items per page, from 1 to ${pagination.max}.`,
+      description: `Items per page, from ${pagination.min ?? 1} to ${pagination.max}.`,
     },
     {
       name: "cursor",
@@ -277,8 +281,15 @@ export function paginationOptions(pagination: PaginationSpec, style: Pagination 
 function cursorCheck(pagination: PaginationSpec, style: Pagination | undefined): ((value: string) => string) | undefined {
   const own = style?.checkCursor?.bind(style);
   const { window } = pagination;
-  if (!own && window === undefined) return undefined;
+  const url = style?.continuation === "url";
+  if (!own && window === undefined && !url) return undefined;
   return (value) => {
+    if (url && !sameOriginUrl(value, value)) {
+      throw usageError(
+        `--cursor must be an absolute HTTP(S) URL without credentials, whitespace, backslashes, or a fragment; received "${echoable(redactUrlInput(value))}".`,
+        "Use a meta.next_cursor value from a previous page.",
+      );
+    }
     const checked = own ? own(value) : value;
     if (window === undefined || (/^[0-9]{1,15}$/.test(checked) && Number(checked) < window)) return checked;
     throw usageError(

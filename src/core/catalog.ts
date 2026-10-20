@@ -134,6 +134,18 @@ function validateCommand(provider: Provider, command: ResourceCommand): void {
   const style = command.pagination?.style ?? provider.pagination;
   if (command.pagination && !style) fail(`${name} declares pagination, but neither it nor the provider has a pagination style.`);
   if (command.pagination?.window !== undefined && command.pagination.window < 1) fail(`${name} declares an empty pagination window.`);
+  if (command.pagination?.min !== undefined && (!Number.isSafeInteger(command.pagination.min) || command.pagination.min < 1 || command.pagination.min > command.pagination.default || command.pagination.default > command.pagination.max)) {
+    fail(`${name} pagination.min must be a positive integer at most default, with default at most max; received ${command.pagination.min}.`);
+  }
+  if (command.pagination?.boundary && (style?.continuation !== "url" || !style.cursorSize)) {
+    fail(`${name} pagination.boundary "${command.pagination.boundary}" requires continuation "url" and cursorSize.`);
+  }
+  if (command.pagination?.min !== undefined && command.pagination.min > 1 && !command.pagination.boundary) {
+    fail(`${name} pagination.min ${command.pagination.min} requires boundary "preserve-cursor-size" to honor --max-items below the minimum.`);
+  }
+  if (command.pagination?.window !== undefined && style?.continuation === "url") {
+    fail(`${name} pagination.window ${command.pagination.window} requires decimal offsets, not continuation "url".`);
+  }
   if (isPerRequest(provider) && command.credential === undefined) fail(`${name} must name its credential.`);
   if (!isPerRequest(provider) && command.credential !== undefined) fail(`${name} names a credential, but the provider declares no credentialSets.`);
   if (isPerRequest(provider) && !fieldSets(provider).some((set) => set.name === command.credential)) {

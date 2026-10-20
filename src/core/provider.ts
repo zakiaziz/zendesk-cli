@@ -10,9 +10,9 @@ import type { HttpMethod } from "./types.js";
  * these fields, so a tool cannot change shared wording.
  */
 export interface Provider {
-  /** Executable name, such as "granola". Names the config directory. */
+  /** Executable name. Names the config directory. */
   bin: string;
-  /** Provider display name, such as "Granola". */
+  /** Provider display name. */
   name: string;
   /**
    * Credential profile fields. A secret field becomes --<key>-file PATH and a hidden prompt on setup and
@@ -22,7 +22,7 @@ export interface Provider {
   secrets: SecretField[];
   /**
    * Groups the credential fields into sets that each command or check names, for a provider whose commands use
-   * different credentials (Postmark: an account token for some commands and a server token for others). Not
+   * different credentials, such as an account token for some commands and a server token for others. Not
    * alternatives: a profile can store every set, and a command fails only when the set it names is absent. Default: one
    * set that holds every field, which every request sends. A provider that declares sets needs at least two, and
    * every command and check names its set.
@@ -60,13 +60,13 @@ export interface Provider {
   /** Reads the provider message, code, and request ID from an error body. Never spreads the body. */
   errorDetail(body: unknown): ProviderErrorDetail;
   /**
-   * REST only: reads a failure that the provider reports inside a successful (2xx) response body, such as Slack's
+   * REST only: reads a failure that the provider reports inside a successful (2xx) response body, such as
    * { ok: false, error }. A failure maps like an HTTP error body: Provider.errorCodes, then the status mapping. Raw api
-   * request output is never interpreted.
+   * request output prints the body with request secrets scrubbed before reporting the failure.
    */
   bodyFailure?(body: unknown): ProviderErrorDetail | undefined;
   /**
-   * Reads provider notices that every response can carry, such as Slack's warning and response_metadata.warnings, into
+   * Reads provider notices that every response can carry, such as warning and response_metadata.warnings, into
    * meta.provider. Applies to every shaped response, paginated reads included, and never to raw api request output.
    * Human output also prints the string values of the keys warning and warnings to stderr, one Warning: line each.
    */
@@ -152,8 +152,8 @@ export interface BaseUrlRule {
    */
   allowPath: boolean;
   /**
-   * With allowPath: the base URL path is a prefix, and every request path is appended to it, so https://slack.com/api
-   * and /chat.postMessage send to https://slack.com/api/chat.postMessage.
+   * With allowPath: the base URL path is a prefix, and every request path is appended to it, so https://api.example.com/v1
+   * and /resources send to https://api.example.com/v1/resources.
    */
   joinPath?: true;
 }
@@ -171,6 +171,8 @@ export interface PageRequest {
 
 /** The part of a collection request that a page can change. The core passes a copy of the body for every page. */
 export interface PagedRequest {
+  /** Complete page URL. query is this URL's searchParams. */
+  url: URL;
   query: URLSearchParams;
   body: unknown;
 }
@@ -188,6 +190,10 @@ export interface PageInfo {
  * implementation to the parameter types the core passes: it narrows payload inside read instead of declaring it.
  */
 export interface Pagination {
+  /** Treat cursors as absolute URLs on the initial request's origin. Default: the adapter applies the cursor. */
+  continuation?: "url";
+  /** Reads the fixed page size from a continuation URL. Required by boundary: "preserve-cursor-size". Undefined means invalid. */
+  cursorSize?: (url: URL) => number | undefined;
   /** Writes the page size and cursor into the query or the body of a collection request. */
   apply: (request: PagedRequest, page: PageRequest) => void;
   /**
@@ -244,6 +250,13 @@ export interface RawApi {
   graphql?: true;
   /** Validates the --file body and makes --file required. Throws INVALID_ARGUMENT. Every method must change state. */
   bodyCheck?(body: unknown): void;
+  /** Adds redaction metadata for raw input. Receives a copy; only previewBody and secretValues affect the call. */
+  sensitiveInput?(request: {
+    method: HttpMethod;
+    path: string;
+    query: readonly (readonly [string, string])[];
+    body: unknown;
+  }): { previewBody?: unknown; secretValues?: string[] };
   examples: string[];
   exceptions?: Exception[];
 }
@@ -289,6 +302,8 @@ export interface HookHelpers {
   request: RequestSpec;
   /** A response header, with the request's secrets scrubbed, or undefined when the response does not carry it. */
   header(name: string): string | undefined;
+  /** Decoded body kind, classified before header redaction. An empty body is empty regardless of Content-Type. */
+  responseType: "empty" | "json" | "text";
 }
 
 export interface ResourceCommandBase {
@@ -305,6 +320,8 @@ export interface ResourceCommandBase {
   failures?: ErrorCode[];
   examples: string[];
   exceptions?: Exception[];
+  /** Validates input once, before profile or access resolution. Its result is passed to request or run. */
+  prepare?(context: Context): unknown;
 }
 
 /** A command that sends one request. */
@@ -315,7 +332,7 @@ export interface RequestCommand extends ResourceCommandBase, ResponseShape {
   unpaginated?: string;
   /** An empty result (null or an empty array) fails NOT_FOUND. */
   emptyIsNotFound?: boolean;
-  request(context: Context, endpoint: Endpoint): RequestSpec;
+  request(context: Context, endpoint: Endpoint, prepared?: unknown): RequestSpec;
   run?: never;
 }
 
@@ -324,7 +341,7 @@ export interface RunCommand extends ResourceCommandBase {
   pagination?: PaginationSpec;
   unpaginated?: string;
   /** Sends requests through the client and returns the data to print, or undefined after a dry run. */
-  run(context: Context, client: Client): Promise<RunResult | undefined>;
+  run(context: Context, client: Client, prepared?: unknown): Promise<RunResult | undefined>;
   request?: never;
   method?: never;
 }
@@ -352,6 +369,10 @@ export interface LocalCommand {
 
 export interface RequestSpec {
   path: string;
+  /** Reads only: follow at most three redirects on the original origin, within the attempt's timeout. Default: reject redirects. */
+  redirects?: "same-origin";
+  /** Non-secret Accept header, also shown in previews. Default: application/json. */
+  accept?: "application/json" | "text/plain" | "text/x-diff";
   query?: [string, string][];
   body?: unknown;
   /** Body shown in dry runs, when the real body carries values that must not print. */
